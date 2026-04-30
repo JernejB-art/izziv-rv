@@ -13,5 +13,6 @@ RUN pip install opencv-python-headless
 RUN pip install matplotlib
 RUN pip install mediapipe==0.10.9
 RUN pip install scipy
+RUN pip install scikit-learn
 
 WORKDIR /workspace
