@@ -97,8 +97,8 @@ def najdi_aktivno_obmocje(gibanje_gladko, fps, okno_s=2.0):
         for i in range(n)
     ])
     
-    # Prag = 10% maksimalne variance
-    prag = np.max(varianca) * 0.1
+    # Prag = 20% maksimalne variance
+    prag = np.max(varianca) * 0.2
     aktivno = varianca > prag
     
     aktivni_indeksi = np.where(aktivno)[0]
@@ -141,7 +141,7 @@ def izracun_kazalec(landmarks, sirina, visina):
     y = landmarks.landmark[KAZALEC_TIP].y * visina
     return x, y
 
-def ohrani_lokalne_ekstreme(indeksi, signal, fps, okno_s=0.5):
+def ohrani_lokalne_ekstreme(indeksi, signal, fps, okno_s=0.8):
     """
     Za vsak zaznani vrh/dolino preveri ali je res lokalni ekstrem
     v širši okolici (okno_s sekund). Zavrže lažne dvojnike.
@@ -202,61 +202,70 @@ def izmenjuj_ekstreme(vrhovi, doline, zacni_z_vrhom=True):
 
     return filtrirani_vrhovi, filtrirane_doline
 
-def zaznava_faze_testa(pozicije, fps):
+def filtriraj_pozicije(pozicije, prag_std=3.0):
     """
-    Zaznava faz testa z avtomatično določitvijo glavne osi gibanja (PCA z numpy).
-    Robustno deluje ne glede na postavitev kamere.
+    Odstrani pozicije ki so statistični outlierji.
+    Nadomesti jih z interpolacijo sosednjih vrednosti.
+    Prepreči da bi napačne zaznave pokvarile SVD analizo.
 
-    pozicije -> numpy array (N, 2) zglajena trajektorija
-    fps      -> hitrost videa
-    vrne     -> slovar z indeksi in časi vrhov in dolin
+    pozicije -> numpy array (N, 2)
+    prag_std -> koliko standardnih deviacij je še sprejemljivo
+    vrne     -> počiščene pozicije
     """
+    pozicije = np.array(pozicije, dtype=float)
+    
+    for os in range(2):
+        signal = pozicije[:, os]
+        mediana = np.median(signal)
+        std = np.std(signal)
+        
+        # Zazna outlierje
+        outlierji = np.abs(signal - mediana) > prag_std * std
+        
+        # Interpoliraj outlierje
+        indeksi = np.arange(len(signal))
+        pozicije[:, os] = np.interp(
+            indeksi,
+            indeksi[~outlierji],
+            signal[~outlierji]
+        )
+    
+    return pozicije
+
+def zaznava_faze_testa(pozicije, fps):
     dt = 1.0 / fps
 
-    # Določi glavno os gibanja z SVD (ekvivalent PCA brez sklearn)
-    # Centriramo podatke in poiščemo smer največje variance
+    # Počisti outlier pozicije pred SVD
+    pozicije = filtriraj_pozicije(pozicije)
+    # Glavna os gibanja z SVD
     center = pozicije - np.mean(pozicije, axis=0)
     _, _, Vt = np.linalg.svd(center)
     gibanje_1d = center @ Vt[0]
-
-    # Zgladimo 1D projekcijo
     gibanje_gladko = glajenje_signal(gibanje_1d, fps)
 
-    # Sredina delovnega prostora - mediana je bolj robustna od 0
     sredina = np.median(gibanje_gladko)
 
-    # Coni glede na sredino
-    cona_a = gibanje_gladko > sredina
-    cona_b = gibanje_gladko < sredina
-
-    # Izreži mirovanje pred in po testu
+    # Izreži mirovanje
     zacetek, konec = najdi_aktivno_obmocje(gibanje_gladko, fps)
     gibanje_aktivno = gibanje_gladko[zacetek:konec]
 
-    # Zaznava vrhov z minimalno višino = 30% razpona signala
-    razpon = np.max(gibanje_aktivno) - np.min(gibanje_aktivno)
-    min_visina = razpon * 0.3
+    # Zaznava vseh ekstremov z minimalno razdaljo 0.5s
+    # Izračunaj prominence samo na aktivnem območju
+    razpon_aktivno = np.max(gibanje_aktivno) - np.min(gibanje_aktivno)
 
-    vsi_vrhovi, _ = find_peaks(gibanje_aktivno, 
-                                distance=int(0.5 * fps))
+    vsi_vrhovi, _ = find_peaks(gibanje_aktivno,
+                                distance=int(0.8 * fps),
+                                prominence=razpon_aktivno * 0.05)
 
-    vse_doline, _ = find_peaks(-gibanje_aktivno, 
-                                distance=int(0.5 * fps))
+    vse_doline, _ = find_peaks(-gibanje_aktivno,
+                                distance=int(0.8 * fps),
+                                prominence=razpon_aktivno * 0.05)
 
-    # Popravi indekse nazaj na originalni signal
     vsi_vrhovi = vsi_vrhovi + zacetek
     vse_doline = vse_doline + zacetek
 
-    vrhovi = vsi_vrhovi
-    doline = vse_doline
-
-    vrhovi = filtriraj_outlierje(vrhovi, gibanje_gladko)
-    doline = filtriraj_outlierje(doline, gibanje_gladko)
-
-    vrhovi = ohrani_lokalne_ekstreme(vrhovi, gibanje_gladko, fps)
-    doline = ohrani_lokalne_ekstreme(doline, -gibanje_gladko, fps)
-
-    vrhovi, doline = izmenjuj_ekstreme(vrhovi, doline)
+    # Samo izmenjavanje brez cone filtra
+    vrhovi, doline = izmenjuj_ekstreme(vsi_vrhovi, vse_doline)
 
     return {
         "vrhovi_idx": vrhovi,

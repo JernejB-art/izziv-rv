@@ -46,7 +46,7 @@ def analiza_video(vhod, izhod, izhod_graf):
     # min_tracking_confidence=0.5  -> minimalna zanesljivost za sledenje roke (0.0-1.0)
     with mp_hands.Hands(
         static_image_mode=False,
-        max_num_hands=1,
+        max_num_hands=2,
         model_complexity=1,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
@@ -71,6 +71,12 @@ def analiza_video(vhod, izhod, izhod_graf):
 
             # Če je roka zaznana, preveri zanesljivost in nariši skelet
             if rezultat.multi_hand_landmarks and rezultat.multi_handedness:
+
+                # Izberi roko z največjo hitrostjo gibanja
+                najboljsi_landmarks = None
+                max_hitrost = -1
+
+
                 for landmarks, handedness in zip(rezultat.multi_hand_landmarks, rezultat.multi_handedness):
 
                     # Preveri zanesljivost zaznave — preskoči nezanesljive frame-e
@@ -82,24 +88,32 @@ def analiza_video(vhod, izhod, izhod_graf):
                     # Nariši skelet roke z barvnim slogom
                     # get_default_hand_landmarks_style()   -> barvne pike za točke roke
                     # get_default_hand_connections_style() -> barvne črte med točkami
-                    mp_draw.draw_landmarks(
-                        frame,
-                        landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_styles.get_default_hand_landmarks_style(),
-                        mp_styles.get_default_hand_connections_style()
-                    )
 
                     # Izračunaj center roke iz zapestja in MCP sklepov
                     cx, cy = izracun_center_roke(landmarks, sirina, visina)
-                    pozicije_roka.append((cx, cy))
+                    # Izračunaj hitrost glede na prejšnjo pozicijo
+                    if len(pozicije_roka) > 0:
+                        zadnja = pozicije_roka[-1]
+                        hitrost = np.sqrt((cx - zadnja[0])**2 + (cy - zadnja[1])**2)
+                    else:
+                        hitrost = 0
 
-                    # Izračunaj konico kazalca za zaznavo faz
-                    kx, ky = izracun_kazalec(landmarks, sirina, visina)
+                    if hitrost > max_hitrost:
+                        max_hitrost = hitrost
+                        najboljsi_landmarks = landmarks
+                        najboljsi_cx, najboljsi_cy = cx, cy
+
+                # Uporabi samo najboljšo roko
+                if najboljsi_landmarks is not None:
+                    mp_draw.draw_landmarks(
+                        frame, najboljsi_landmarks, mp_hands.HAND_CONNECTIONS,
+                        mp_styles.get_default_hand_landmarks_style(),
+                        mp_styles.get_default_hand_connections_style()
+                    )
+                    pozicije_roka.append((najboljsi_cx, najboljsi_cy))
+                    kx, ky = izracun_kazalec(najboljsi_landmarks, sirina, visina)
                     pozicije_kazalec.append((kx, ky))
-
-                    # Nariši center roke (rumena) in konico kazalca (vijolična)
-                    cv2.circle(frame, (int(cx), int(cy)), 8, (0, 255, 255), -1)
+                    cv2.circle(frame, (int(najboljsi_cx), int(najboljsi_cy)), 8, (0, 255, 255), -1)
                     cv2.circle(frame, (int(kx), int(ky)), 6, (255, 0, 255), -1)
 
             # Zapiši frame v izhodni video
@@ -151,7 +165,7 @@ def analiza_video(vhod, izhod, izhod_graf):
 
 if __name__ == "__main__":
     analiza_video(
-        "/data/Data/patient_183/patient_183camP_0_20231116_14_10_55.mp4",
+        "/data/Data/patient_231/patient_231camP_2_20240116_14_46_04.mp4",
         "/workspace/results/output.mp4",
         "/workspace/results/kinematika.png"
     )
