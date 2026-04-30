@@ -1,9 +1,15 @@
 # detect.py
 # Skripta s CV prebere video posnetek, z MediaPipe zazna roko v vsakem frame-u,
-# nariše skelet roke (21 točk in povezave) ter shrani rezultat kot nov video.
+# nariše skelet roke (21 točk in povezave),
+# izračuna kinematične parametre (d, v, a) in
+# zazna faze testa (pobiranje/vstavljanje zatičev). Rezultate shrani kot video in graf.
 
 import cv2
 import mediapipe as mp
+import numpy as np
+import matplotlib.pyplot as plt
+
+from kinematics import izracun_center_roke, izracun_kinematika, zaznava_faze_testa
 
 # Orodja za zaznavo rok in risanje točk ter povezav
 mp_hands = mp.solutions.hands
@@ -11,7 +17,7 @@ mp_draw = mp.solutions.drawing_utils
 # Orodje za barvni slog točk in povezav
 mp_styles = mp.solutions.drawing_styles
 
-def analiziraj_video(vhod, izhod):
+def analiza_video(vhod, izhod, izhod_graf):
     # Odpri vhodni video
     cap = cv2.VideoCapture(vhod)
 
@@ -24,6 +30,9 @@ def analiziraj_video(vhod, izhod):
     # cv2.VideoWriter(pot, codec, fps, (sirina, visina)) -> objekt za pisanje videa
     # cv2.VideoWriter_fourcc(*'mp4v')                   -> mp4 codec
     writer = cv2.VideoWriter(izhod, cv2.VideoWriter_fourcc(*'mp4v'), fps, (sirina, visina))
+
+    # Seznam za shranjevanje pozicij centra roke skozi čas
+    pozicije = []
 
     # Zaženi detektor rok z nastavitvami
     # static_image_mode=False      -> optimizirano za video (sledenje med framji)
@@ -73,13 +82,53 @@ def analiziraj_video(vhod, izhod):
                         mp_styles.get_default_hand_connections_style()
                     )
 
+                    # Izračunaj center roke iz zapestja in MCP sklepov
+                    cx, cy = izracun_center_roke(landmarks, sirina, visina)
+                    pozicije.append((cx, cy))
+
+                    # Nariši center roke na frame
+                    cv2.circle(frame, (int(cx), int(cy)), 8, (0, 255, 255), -1)
+
             # Zapiši frame v izhodni video
             writer.write(frame)
     
     # Sprosti vire
     cap.release()
     writer.release()
+
+    # Izračunaj kinematiko in zaznaj faze testa
+    if len(pozicije) > 20:
+        kin = izracun_kinematika(pozicije, fps)
+        faze = zaznava_faze_testa(kin["pozicije"], fps)
+
+        print(f"Število pobiranje zatičev: {faze['stevilo_pobiranje']}")
+        print(f"Število vstavljanje zatičev: {faze['stevilo_vstavljanje']}")
+
+        # Nariši in shrani grafe d/v/a
+        fig, axes = plt.subplots(3, 1, figsize=(12, 8))
+        fig.suptitle("Kinematični parametri gibanja roke")
+
+        axes[0].plot(kin["cas_pot"], kin["pot"], color="blue")
+        axes[0].set_ylabel("Pot [px]")
+        axes[0].set_title("Skupna prevožena pot d(t)")
+
+        axes[1].plot(kin["cas_hitrost"], kin["hitrost"], color="green")
+        axes[1].set_ylabel("Hitrost [px/s]")
+        axes[1].set_title("Hitrost v(t)")
+
+        axes[2].plot(kin["cas_pospesek"], kin["pospesek"], color="red")
+        axes[2].set_ylabel("Pospešek [px/s²]")
+        axes[2].set_xlabel("Čas [s]")
+        axes[2].set_title("Pospešek a(t)")
+
+        plt.tight_layout()
+        plt.savefig(izhod_graf)
+        print(f"Graf shranjen: {izhod_graf}")
+
     print("Končano!")
 
 if __name__ == "__main__":
-    analiziraj_video("/data/Data/patient_001/patient_001camP_1_20241121_10_21_45.mp4", "/workspace/results/output.mp4")
+    analiza_video("/data/Data/patient_183/patient_183camP_2_20231116_14_10_55.mp4",
+        "/workspace/results/output.mp4",
+        "/workspace/results/kinematika.png"
+        )
