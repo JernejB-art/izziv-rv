@@ -8,6 +8,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+import re
 
 from kinematics import izracun_center_roke, izracun_kazalec, izracun_kinematika, zaznava_faze_testa
 
@@ -20,7 +22,36 @@ mp_styles = mp.solutions.drawing_styles
 # Minimalna zanesljivost zaznave roke — frame z nižjo zanesljivostjo se preskoči
 PRAG_ZANESLJIVOSTI = 0.7
 
+def doloci_posodico(frame, ime_datoteke=''):
+    """
+    Empirično določena lokacija posodice glede na kamero.
+    Center in polmer so relativni glede na resolucijo slike.
+
+    ime_datoteke -> string z imenom video datoteke (za zaznavo kamere)
+    vrne -> (cx, cy, polmer) v pikslih
+    """
+    visina, sirina = frame.shape[:2]
+
+    # Parametri: (relativni_x, relativni_y, relativni_polmer)
+    parametri = {
+        'camP_0': (0.561, 0.544, 0.080),
+        'camP_1': (0.571, 0.456, 0.080),
+        'camP_2': (0.461, 0.410, 0.080),
+    }
+
+
+    # Razpoznaj kamero iz imena datoteke
+    match = re.search(r'(camP_\d+)', ime_datoteke)
+    kamera = match.group(1) if match else 'camP_0'
+
+    rx, ry, rr = parametri.get(kamera, parametri['camP_0'])
+    cx = int(sirina * rx)
+    cy = int(visina * ry)
+    polmer = int(sirina * rr)
+    return cx, cy, polmer
+
 def analiza_video(vhod, izhod, izhod_graf):
+    ime_datoteke = os.path.basename(vhod)
     # Odpri vhodni video
     cap = cv2.VideoCapture(vhod)
 
@@ -37,6 +68,7 @@ def analiza_video(vhod, izhod, izhod_graf):
     # Seznami za shranjevanje pozicij skozi čas
     pozicije_roka = []    # center roke -> za kinematiko
     pozicije_kazalec = [] # konica kazalca -> za zaznavo faz
+    posodica = None
 
     # Zaženi detektor rok z nastavitvami
     # static_image_mode=False      -> optimizirano za video (sledenje med framji)
@@ -57,6 +89,9 @@ def analiza_video(vhod, izhod, izhod_graf):
             # Preberi naslednji frame
             # cap.read() -> (ret, frame): ret=True če je frame uspešno prebran
             ret, frame = cap.read()
+            # Določi posodico iz prvega frame-a (samo enkrat)
+            if posodica is None:
+                posodica = doloci_posodico(frame, ime_datoteke)
             if not ret:
                 break  # Konec videa
 
@@ -116,6 +151,11 @@ def analiza_video(vhod, izhod, izhod_graf):
                     cv2.circle(frame, (int(najboljsi_cx), int(najboljsi_cy)), 8, (0, 255, 255), -1)
                     cv2.circle(frame, (int(kx), int(ky)), 6, (255, 0, 255), -1)
 
+            # Izriši območje posodice na frame
+            cx_p, cy_p, r_p = posodica
+            cv2.circle(frame, (cx_p, cy_p), r_p, (255, 100, 0), 2)
+            cv2.circle(frame, (cx_p, cy_p), 5, (0, 255, 255), -1)
+
             # Zapiši frame v izhodni video
             writer.write(frame)
 
@@ -165,7 +205,7 @@ def analiza_video(vhod, izhod, izhod_graf):
 
 if __name__ == "__main__":
     analiza_video(
-        "/data/Data/patient_231/patient_231camP_2_20240116_14_46_04.mp4",
+        "/data/Data/patient_065/patient_065camP_1_20230914_13_43_24.mp4",
         "/workspace/results/output.mp4",
         "/workspace/results/kinematika.png"
     )
