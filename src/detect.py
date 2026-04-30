@@ -63,4 +63,4 @@ def analiziraj_video(vhod, izhod):
     print("Končano!")
 
 if __name__ == "__main__":
-    analiziraj_video("/data/test.mp4", "/workspace/results/output.mp4")
+    analiziraj_video("/data/Data/patient_001/patient_001camP_0_20241121_10_21_17.mp4", "/workspace/results/output.mp4")
