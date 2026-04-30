@@ -8,6 +8,8 @@ import mediapipe as mp
 # Orodja za zaznavo rok in risanje točk ter povezav
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
+# Orodje za barvni slog točk in povezav
+mp_styles = mp.solutions.drawing_styles
 
 def analiziraj_video(vhod, izhod):
     # Odpri vhodni video
@@ -23,11 +25,19 @@ def analiziraj_video(vhod, izhod):
     # cv2.VideoWriter_fourcc(*'mp4v')                   -> mp4 codec
     writer = cv2.VideoWriter(izhod, cv2.VideoWriter_fourcc(*'mp4v'), fps, (sirina, visina))
 
-    # Zaženi detektor rok in procesiraj frame po frame
-    # mp_hands.Hands(static_image_mode, max_num_hands) -> detektor rok
-    #   static_image_mode=False -> optimiziran za video (sledenje med framji)
-    #   max_num_hands=1         -> išče največ eno roko
-    with mp_hands.Hands(static_image_mode=False, max_num_hands=1) as hands:
+    # Zaženi detektor rok z nastavitvami
+    # static_image_mode=False      -> optimizirano za video (sledenje med framji)
+    # max_num_hands=1              -> išče samo eno roko
+    # model_complexity=1           -> bolj natančen model (0=hitrejši, 1=natančnejši)
+    # min_detection_confidence=0.5 -> minimalna zanesljivost za zaznavo roke (0.0-1.0)
+    # min_tracking_confidence=0.5  -> minimalna zanesljivost za sledenje roke (0.0-1.0)
+    with mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        model_complexity=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    ) as hands:
         # Zanka se vrti do konca videa
         while cap.isOpened():
 
@@ -52,7 +62,16 @@ def analiziraj_video(vhod, izhod):
             #   HAND_CONNECTIONS -> seznam parov točk, ki definirajo kosti roke
             if rezultat.multi_hand_landmarks:
                 for landmarks in rezultat.multi_hand_landmarks:
-                    mp_draw.draw_landmarks(frame, landmarks, mp_hands.HAND_CONNECTIONS)
+                    # Nariši skelet roke z barvnim slogom
+                    # get_default_hand_landmarks_style()  -> rdeče pike za posamezne točke roke
+                    # get_default_hand_connections_style() -> zelene črte med točkami (kosti roke)
+                    mp_draw.draw_landmarks(
+                        frame,
+                        landmarks,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_styles.get_default_hand_landmarks_style(),
+                        mp_styles.get_default_hand_connections_style()
+                    )
 
             # Zapiši frame v izhodni video
             writer.write(frame)
@@ -63,4 +82,4 @@ def analiziraj_video(vhod, izhod):
     print("Končano!")
 
 if __name__ == "__main__":
-    analiziraj_video("/data/Data/patient_001/patient_001camP_0_20241121_10_21_17.mp4", "/workspace/results/output.mp4")
+    analiziraj_video("/data/Data/patient_001/patient_001camP_1_20241121_10_21_45.mp4", "/workspace/results/output.mp4")
