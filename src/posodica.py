@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 
-frame = cv2.imread('/workspace/results/patient_088_posodica.png')
+frame = cv2.imread('/workspace/results/patient_089_posodica.png')
 siva = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 _, maska = cv2.threshold(siva, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)

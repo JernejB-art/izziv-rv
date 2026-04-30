@@ -35,7 +35,7 @@ def doloci_posodico(frame, ime_datoteke=''):
     # Parametri: (relativni_x, relativni_y, relativni_polmer)
     parametri = {
         'camP_0': (0.561, 0.544, 0.080),
-        'camP_1': (0.571, 0.456, 0.080),
+        'camP_1': (0.571, 0.456, 0.081),
         'camP_2': (0.461, 0.410, 0.080),
     }
 
