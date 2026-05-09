@@ -175,22 +175,19 @@ def izmenjuj_ekstreme(vrhovi, doline, zacni_z_vrhom=True):
     Zagotovi pravilno izmenjevanje vrhov in dolin.
     Test se vedno začne s pobiranjem (vrh) in konča z vstavljanjem (dolina).
 
-    vrhovi       -> array indeksov vrhov (pobiranje)
-    doline       -> array indeksov dolin (vstavljanje)
+    vrhovi        -> array indeksov vrhov (pobiranje)
+    doline        -> array indeksov dolin (vstavljanje)
     zacni_z_vrhom -> True = začni s pobiranjem
-    vrne         -> (filtrirani_vrhovi, filtrirane_doline)
+    vrne          -> (filtrirani_vrhovi, filtrirane_doline)
     """
     if len(vrhovi) == 0 or len(doline) == 0:
         return vrhovi, doline
 
-    # Združi vse ekstreme v eno zaporedje s oznako tipa
-    # 1 = vrh (pobiranje), -1 = dolina (vstavljanje)
     vsi = [(idx, 1) for idx in vrhovi] + [(idx, -1) for idx in doline]
     vsi = sorted(vsi, key=lambda x: x[0])
 
-    # Ohrani samo pravilno izmenjevanje
     ohranjeni = []
-    zadnji_tip = -1 if zacni_z_vrhom else 1  # začnemo nasprotno da prvi element uspe
+    zadnji_tip = -1 if zacni_z_vrhom else 1
 
     for idx, tip in vsi:
         if tip != zadnji_tip:
@@ -201,6 +198,7 @@ def izmenjuj_ekstreme(vrhovi, doline, zacni_z_vrhom=True):
     filtrirane_doline = np.array([idx for idx, tip in ohranjeni if tip == -1])
 
     return filtrirani_vrhovi, filtrirane_doline
+
 
 def filtriraj_pozicije(pozicije, prag_std=3.0):
     """
@@ -277,3 +275,182 @@ def zaznava_faze_testa(pozicije, fps):
         "gibanje_1d": gibanje_gladko,
         "sredina": sredina
     }
+
+def zaznava_zaticev(pozicije_kazalec, fps):
+    """
+    Prešteje število prenesenih zatičev iz trajektorije kazalca.
+
+    Algoritem po Balaceanu et al. (2024):
+    - x-koordinata kazalca se giblje med posodico in luknjicami
+    - Sredina delovnega prostora = midpoint med max in min x
+    - Vrhovi na strani posodice = pobiranje zatičev
+    - Doline na strani luknjic = vstavljanje zatičev
+
+    pozicije_kazalec -> seznam (x, y) koordinat konice kazalca
+    fps              -> hitrost videa v sličicah/sekundo
+    vrne             -> slovar z rezultati štetja
+    """
+    if len(pozicije_kazalec) < fps * 2:
+        return {'pobiranje': 0, 'vstavljanje': 0, 'stevilo_zaticev': 0}
+
+    tocke = np.array(pozicije_kazalec)
+    x = tocke[:, 0].astype(float)
+
+    # Zgladimo x signal pred iskanjem ekstremov
+    x = glajenje_signal(x, fps)
+
+    # Sredina delovnega prostora (meja med posodico in luknjicami)
+    sredina = (x.max() + x.min()) / 2
+
+    # Minimalna razdalja med dvema eventoma (~0.5 sekunde)
+    min_razdalja = int(fps * 0.5)
+
+    # Prominence = vsaj 5% celotnega razpona gibanja
+    razpon = x.max() - x.min()
+    min_prominence = razpon * 0.05
+
+    # Vrhovi = pobiranje iz posodice, doline = vstavljanje v luknjice
+    vrhovi, _ = find_peaks( x, distance=min_razdalja, prominence=min_prominence)
+    doline, _ = find_peaks(-x, distance=min_razdalja, prominence=min_prominence)
+
+    # Filtriraj glede na cono (katera stran sredine)
+    pobiranje   = np.array([v for v in vrhovi if x[v] > sredina])
+    vstavljanje = np.array([d for d in doline if x[d] < sredina])
+
+    # Zagotovi pravilno izmenjevanje (pobiranje → vstavljanje → pobiranje...)
+    pobiranje, vstavljanje = izmenjuj_ekstreme(pobiranje, vstavljanje, zacni_z_vrhom=True)
+
+    return {
+        'pobiranje':       len(pobiranje),
+        'vstavljanje':     len(vstavljanje),
+        'stevilo_zaticev': min(len(pobiranje), len(vstavljanje)),
+        'vrhovi_idx':      pobiranje,
+        'doline_idx':      vstavljanje,
+        'x_kazalec':       x,
+        'sredina':         sredina,
+    }
+
+def izracun_casov_zaticev(rezultat_zaticev, kin, fps):
+    """
+    Določi točen čas prijema/odlaganja iz minimuma hitrosti.
+    
+    Po Balaceanu et al. (2024): moment prijema/odlaganja = ko hitrost
+    pade pod 5% maksimalne hitrosti in ostane tam vsaj 40ms.
+    
+    Iščemo minimum hitrosti PRED vsakim vrhom/dolino trajektorije
+    — to je moment ko se roka ustavi ob prijemu/odlaganju.
+    """
+    dt = 1.0 / fps
+    vrhovi = rezultat_zaticev['vrhovi_idx']
+    doline = rezultat_zaticev['doline_idx']
+    hitrost = kin['hitrost']
+
+    # Okno pred vrhom/dolino kjer iščemo minimum hitrosti (~1s)
+    okno_pred = int(fps * 1.0)
+    okno_po   = int(fps * 0.3)
+
+    casi_pobiranje = []
+    casi_vstavljanje = []
+
+    for i in range(min(len(vrhovi), len(doline))):
+        v = vrhovi[i]
+        d = doline[i]
+
+        # Pobiranje: minimum hitrosti strogo PRED vrhom
+        zac_p = max(0, v - okno_pred)
+        lokalni_min_p = zac_p + np.argmin(hitrost[zac_p:v])
+        casi_pobiranje.append(lokalni_min_p * dt)
+
+        # Vstavljanje: minimum hitrosti strogo MED vrhom in dolino
+        zac_v = v
+        kon_v = min(len(hitrost), d + okno_po)
+        lokalni_min_v = zac_v + np.argmin(hitrost[zac_v:kon_v])
+        casi_vstavljanje.append(lokalni_min_v * dt)
+
+    casi_postavljanja = np.array([
+        max(0.0, casi_vstavljanje[i] - casi_pobiranje[i])
+        for i in range(min(len(casi_pobiranje), len(casi_vstavljanje)))
+    ])
+
+    skupni_cas = casi_vstavljanje[-1] - casi_pobiranje[0] if (len(casi_pobiranje) > 0 and len(casi_vstavljanje) > 0) else 0
+
+    return {
+        'casi_pobiranje':    casi_pobiranje,
+        'casi_vstavljanje':  casi_vstavljanje,
+        'casi_postavljanja': casi_postavljanja,
+        'skupni_cas':        skupni_cas,
+    }
+
+def zaznava_prehodov(pozicije_kazalec, posodica, fps):
+    cx_p, cy_p, r_p = posodica
+    dt = 1.0 / fps
+    tocke = np.array(pozicije_kazalec)
+
+    razdalje = np.sqrt(
+        (tocke[:, 0] - cx_p)**2 +
+        (tocke[:, 1] - cy_p)**2
+    )
+
+    # Hysteresis: vstop pri manjšem radiju, izstop pri večjem
+    # Prepreči osciliranje ko je kazalec na robu
+    r_vstop  = r_p * 0.85  # vstopi ko je res znotraj
+    r_izstop = r_p * 1.15  # izstopi šele ko je res zunaj
+
+    dogodki = []
+    znotraj = False  # začnemo zunaj
+
+    for i in range(len(razdalje)):
+        if not znotraj and razdalje[i] < r_vstop:
+            znotraj = True
+            dogodki.append({'frame': i, 'cas': i * dt, 'tip': 'vstop_posodica'})
+        elif znotraj and razdalje[i] > r_izstop:
+            znotraj = False
+            dogodki.append({'frame': i, 'cas': i * dt, 'tip': 'izstop_posodica'})
+
+    # Štetje ciklov z minimalnim časom obiska
+    MIN_CAS_OBISKA = 0.25
+    casi_pobiranje = []
+    casi_transport = []
+    stevilo_zaticev = 0
+
+    i = 0
+    while i < len(dogodki) - 1:
+        if dogodki[i]['tip'] == 'vstop_posodica' and dogodki[i+1]['tip'] == 'izstop_posodica':
+            t_pobiranje = dogodki[i+1]['cas'] - dogodki[i]['cas']
+            if t_pobiranje >= MIN_CAS_OBISKA:
+                casi_pobiranje.append(t_pobiranje)
+                stevilo_zaticev += 1
+                if i + 2 < len(dogodki):
+                    t_transport = dogodki[i+2]['cas'] - dogodki[i+1]['cas']
+                    casi_transport.append(t_transport)
+            i += 2
+        else:
+            i += 1
+
+    return {
+        'dogodki':         dogodki,
+        'casi_pobiranje':  np.array(casi_pobiranje),
+        'casi_transport':  np.array(casi_transport),
+        'stevilo_zaticev': stevilo_zaticev,
+        'razdalje':        razdalje,
+    }
+
+def filtriraj_skoke_kazalec(pozicije_kazalec, fps, max_hitrost_px=800):
+    """
+    Odstrani frame-e kjer kazalec naredi nerealen skok.
+    max_hitrost_px -> maksimalna fizična hitrost kazalca v px/s
+    """
+    tocke = np.array(pozicije_kazalec, dtype=float)
+    dt = 1.0 / fps
+    max_skok = 150  # max skok v pikslih med dvema framoma
+
+    ociscene = [tocke[0]]
+    for i in range(1, len(tocke)):
+        skok = np.linalg.norm(tocke[i] - ociscene[-1])
+        if skok < max_skok:
+            ociscene.append(tocke[i])
+        else:
+            # Zadrži prejšnjo pozicijo namesto napačne
+            ociscene.append(ociscene[-1])
+
+    return np.array(ociscene)
