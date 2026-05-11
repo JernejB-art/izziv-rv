@@ -454,3 +454,30 @@ def filtriraj_skoke_kazalec(pozicije_kazalec, fps, max_hitrost_px=800):
             ociscene.append(ociscene[-1])
 
     return np.array(ociscene)
+
+def interpoliraj_manjkajoce(pozicije, frame_indeksi, skupaj_framov):
+    """
+    Za manjkajoče frame-e ohrani zadnjo znano pozicijo (forward fill).
+    Boljše kot linearna interpolacija ker roka ne gre po ravni črti
+    med dvema oddaljenima točkama.
+    
+    np.interp bi interpoliral linearno — kar je napačno ko roka
+    skoči iz luknjic v posodico in MediaPipe jo med potjo izgubi.
+    """
+    if len(pozicije) == 0:
+        return np.zeros((skupaj_framov, 2))
+
+    tocke = np.array(pozicije, dtype=float)
+    indeksi = np.array(frame_indeksi)
+    rezultat = np.zeros((skupaj_framov, 2))
+
+    # Forward fill — ohrani zadnjo znano vrednost
+    zadnja = tocke[0]
+    j = 0
+    for i in range(skupaj_framov):
+        if j < len(indeksi) and indeksi[j] == i:
+            zadnja = tocke[j]
+            j += 1
+        rezultat[i] = zadnja
+
+    return rezultat

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import os
 import re
 
-from kinematics import izracun_center_roke, izracun_kazalec, izracun_kinematika, zaznava_faze_testa, zaznava_zaticev, izracun_casov_zaticev, zaznava_prehodov, filtriraj_skoke_kazalec
+from kinematics import izracun_center_roke, glajenje_signal, izracun_kazalec, izracun_kinematika, zaznava_faze_testa, zaznava_zaticev, izracun_casov_zaticev, zaznava_prehodov, filtriraj_skoke_kazalec, interpoliraj_manjkajoce
 
 # Orodja za zaznavo rok in risanje točk ter povezav
 mp_hands = mp.solutions.hands
@@ -36,7 +36,7 @@ def doloci_posodico(frame, ime_datoteke=''):
     parametri = {
         'camP_0': (0.561, 0.544, 0.090),
         'camP_1': (0.571, 0.456, 0.091),
-        'camP_2': (0.461, 0.410, 0.090),
+        'camP_2': (0.461, 0.410, 0.080),
     }
 
 
@@ -68,7 +68,13 @@ def analiza_video(vhod, izhod, izhod_graf):
     # Seznami za shranjevanje pozicij skozi čas
     pozicije_roka = []    # center roke -> za kinematiko
     pozicije_kazalec = [] # konica kazalca -> za zaznavo faz
+    frame_indeksi_kazalec = []
+    frame_counter = 0
     posodica = None
+    sledena_roka_id = None
+    glasovi_roke = {'Left': 0.0, 'Right': 0.0}
+    zadnje_pozicije = {'Left': None, 'Right': None}
+    N_UVODNIH_FRAMOV = 50
 
     # Zaženi detektor rok z nastavitvami
     # static_image_mode=False      -> optimizirano za video (sledenje med framji)
@@ -104,52 +110,48 @@ def analiza_video(vhod, izhod, izhod_graf):
             # hands.process(rgb) -> rezultat z .multi_hand_landmarks (seznam zaznanih rok)
             rezultat = hands.process(rgb)
 
-            # Če je roka zaznana, preveri zanesljivost in nariši skelet
-            if rezultat.multi_hand_landmarks and rezultat.multi_handedness:
+            # Sledenje eni roki skozi celoten video
+            najboljsi_landmarks = None
 
-                # Izberi roko z največjo hitrostjo gibanja
-                najboljsi_landmarks = None
-                max_hitrost = -1
+            if rezultat.multi_hand_landmarks is not None and rezultat.multi_handedness is not None:
+                if frame_counter < N_UVODNIH_FRAMOV:
+                    # Uvodni framovi — štej premike vsake roke
+                    for landmarks, handedness in zip(rezultat.multi_hand_landmarks, rezultat.multi_handedness):
+                        label = handedness.classification[0].label
+                        cx, cy = izracun_center_roke(landmarks, sirina, visina)
+                        if zadnje_pozicije[label] is not None:
+                            premik = np.sqrt((cx - zadnje_pozicije[label][0])**2 +
+                                             (cy - zadnje_pozicije[label][1])**2)
+                            glasovi_roke[label] += premik
+                        zadnje_pozicije[label] = (cx, cy)
 
+                elif frame_counter == N_UVODNIH_FRAMOV:
+                    # Izberi roko z večjim skupnim premikom
+                    sledena_roka_id = max(glasovi_roke, key=glasovi_roke.get)
+                    print(f"Izbrana aktivna roka: {sledena_roka_id} (premiki: {glasovi_roke})")
 
-                for landmarks, handedness in zip(rezultat.multi_hand_landmarks, rezultat.multi_handedness):
+                if sledena_roka_id is not None:
+                    # Sledi samo izbrani roki
+                    for landmarks, handedness in zip(rezultat.multi_hand_landmarks, rezultat.multi_handedness):
+                        if handedness.classification[0].label == sledena_roka_id:
+                            if handedness.classification[0].score >= PRAG_ZANESLJIVOSTI:
+                                najboljsi_landmarks = landmarks
+                                najboljsi_cx, najboljsi_cy = izracun_center_roke(landmarks, sirina, visina)
+                            break
 
-                    # Preveri zanesljivost zaznave — preskoči nezanesljive frame-e
-                    # handedness.classification[0].score -> verjetnost pravilne zaznave (0.0-1.0)
-                    zanesljivost = handedness.classification[0].score
-                    if zanesljivost < PRAG_ZANESLJIVOSTI:
-                        continue
-
-                    # Nariši skelet roke z barvnim slogom
-                    # get_default_hand_landmarks_style()   -> barvne pike za točke roke
-                    # get_default_hand_connections_style() -> barvne črte med točkami
-
-                    # Izračunaj center roke iz zapestja in MCP sklepov
-                    cx, cy = izracun_center_roke(landmarks, sirina, visina)
-                    # Izračunaj hitrost glede na prejšnjo pozicijo
-                    if len(pozicije_roka) > 0:
-                        zadnja = pozicije_roka[-1]
-                        hitrost = np.sqrt((cx - zadnja[0])**2 + (cy - zadnja[1])**2)
-                    else:
-                        hitrost = 0
-
-                    if hitrost > max_hitrost:
-                        max_hitrost = hitrost
-                        najboljsi_landmarks = landmarks
-                        najboljsi_cx, najboljsi_cy = cx, cy
-
-                # Uporabi samo najboljšo roko
-                if najboljsi_landmarks is not None:
-                    mp_draw.draw_landmarks(
-                        frame, najboljsi_landmarks, mp_hands.HAND_CONNECTIONS,
-                        mp_styles.get_default_hand_landmarks_style(),
-                        mp_styles.get_default_hand_connections_style()
-                    )
-                    pozicije_roka.append((najboljsi_cx, najboljsi_cy))
-                    kx, ky = izracun_kazalec(najboljsi_landmarks, sirina, visina)
-                    pozicije_kazalec.append((kx, ky))
-                    cv2.circle(frame, (int(najboljsi_cx), int(najboljsi_cy)), 8, (0, 255, 255), -1)
-                    cv2.circle(frame, (int(kx), int(ky)), 6, (255, 0, 255), -1)
+            # Uporabi samo najboljšo roko
+            if najboljsi_landmarks is not None:
+                mp_draw.draw_landmarks(
+                    frame, najboljsi_landmarks, mp_hands.HAND_CONNECTIONS,
+                    mp_styles.get_default_hand_landmarks_style(),
+                    mp_styles.get_default_hand_connections_style()
+                )
+                pozicije_roka.append((najboljsi_cx, najboljsi_cy))
+                kx, ky = izracun_kazalec(najboljsi_landmarks, sirina, visina)
+                pozicije_kazalec.append((kx, ky))
+                frame_indeksi_kazalec.append(frame_counter)
+                cv2.circle(frame, (int(najboljsi_cx), int(najboljsi_cy)), 8, (0, 255, 255), -1)
+                cv2.circle(frame, (int(kx), int(ky)), 6, (255, 0, 255), -1)
 
             # Izriši območje posodice na frame
             cx_p, cy_p, r_p = posodica
@@ -172,6 +174,7 @@ def analiza_video(vhod, izhod, izhod_graf):
                     # Kazalec je ZUNAJ posodice — modra barva kroga
                     cv2.circle(frame, (cx_p, cy_p), r_p, (255, 100, 0), 2)
             # Zapiši frame v izhodni video
+            frame_counter += 1
             writer.write(frame)
 
     # Sprosti vire
@@ -180,8 +183,63 @@ def analiza_video(vhod, izhod, izhod_graf):
 
     np.save('/workspace/results/pozicije_kazalec.npy', np.array(pozicije_kazalec))
 
+    if len(pozicije_kazalec) > 0:
+        # Interpoliraj
+        skupaj_framov = frame_counter
+        pozicije_interp = interpoliraj_manjkajoce(
+            pozicije_kazalec, frame_indeksi_kazalec, skupaj_framov)
+        x_gladko = glajenje_signal(pozicije_interp[:, 0], fps, cutoff=3)
+        y_gladko = glajenje_signal(pozicije_interp[:, 1], fps, cutoff=3)
+        pozicije_kazalec_gladko = np.column_stack([x_gladko, y_gladko])
+
+        # Drugi prehod — nariši interpolirano trajektorijo
+        cap2 = cv2.VideoCapture(vhod)
+        izhod2 = izhod.replace('.mp4', '_interp.mp4')
+        writer2 = cv2.VideoWriter(izhod2, cv2.VideoWriter_fourcc(*'mp4v'),
+                                fps, (sirina, visina))
+        idx = 0
+        while cap2.isOpened():
+            ret, frame = cap2.read()
+            if not ret or idx >= len(pozicije_kazalec_gladko):
+                break
+
+            kx = int(pozicije_kazalec_gladko[idx, 0])
+            ky = int(pozicije_kazalec_gladko[idx, 1])
+
+            # Nariši interpoliran kazalec
+            cv2.circle(frame, (kx, ky), 8, (0, 200, 255), -1)
+
+            # Nariši posodico in preveri ali je kazalec znotraj
+            cx_p, cy_p, r_p = posodica
+            razdalja = np.sqrt((kx - cx_p)**2 + (ky - cy_p)**2)
+            if razdalja < r_p * 0.85:
+                cv2.circle(frame, (cx_p, cy_p), r_p, (0, 255, 0), 3)
+                cv2.putText(frame, "V POSODICI", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            else:
+                cv2.circle(frame, (cx_p, cy_p), r_p, (255, 100, 0), 2)
+
+            writer2.write(frame)
+            idx += 1
+
+    cap2.release()
+    writer2.release()
+    print(f"Interpolirani video: {izhod2}")
+
     # Izračunaj kinematiko in zaznaj faze testa
     if len(pozicije_roka) > 20:
+        skupaj_framov = frame_counter
+        pozicije_kazalec_interp = interpoliraj_manjkajoce(
+            pozicije_kazalec, 
+            frame_indeksi_kazalec, 
+            skupaj_framov
+        )
+        x_gladko = glajenje_signal(pozicije_kazalec_interp[:, 0], fps, cutoff=3)
+        y_gladko = glajenje_signal(pozicije_kazalec_interp[:, 1], fps, cutoff=3)
+        pozicije_kazalec_gladko = np.column_stack([x_gladko, y_gladko])
+        prehodi = zaznava_prehodov(pozicije_kazalec_gladko, posodica, fps)
+
+
         kin = izracun_kinematika(pozicije_roka, fps)
         faze = zaznava_faze_testa(np.array(pozicije_kazalec), fps)
 
@@ -202,8 +260,6 @@ def analiza_video(vhod, izhod, izhod_graf):
         print(f"Število vstavljanje zatičev: {faze['stevilo_vstavljanje']}")
 
         if len(pozicije_kazalec) > 20 and posodica is not None:
-            pozicije_kazalec_clean = filtriraj_skoke_kazalec(pozicije_kazalec, fps)
-            prehodi = zaznava_prehodov(pozicije_kazalec_clean, posodica, fps)
             print(f"Število obiskov posodice: {prehodi['stevilo_zaticev']}")
             print(f"Časi pobiranje (v posodici):")
             for i, t in enumerate(prehodi['casi_pobiranje']):
@@ -290,16 +346,22 @@ def analiza_video(vhod, izhod, izhod_graf):
             prehodi_x = np.array([d['frame'] for d in prehodi['dogodki']])
             prehodi_tip = np.array([d['tip'] for d in prehodi['dogodki']])
             gibanje = faze['gibanje_1d']
-            
+
             vstopi = prehodi_x[prehodi_tip == 'vstop_posodica']
             izstopi = prehodi_x[prehodi_tip == 'izstop_posodica']
-            
+
+            # Filtriraj indekse ki so znotraj dolžine gibanje signala
+            vstopi_veljavni   = vstopi[vstopi < len(gibanje)]
+            izstopi_veljavni  = izstopi[izstopi < len(gibanje)]
+
             plt.figure(figsize=(14, 4))
             plt.plot(gibanje, color='blue', label='Gibanje 1D')
-            if len(vstopi): plt.scatter(vstopi, gibanje[vstopi], 
-                                        color='green', s=100, marker='^', label='Vstop posodica', zorder=5)
-            if len(izstopi): plt.scatter(izstopi, gibanje[izstopi], 
-                                        color='red', s=100, marker='v', label='Izstop posodica', zorder=5)
+            if len(vstopi_veljavni):
+                plt.scatter(vstopi_veljavni, gibanje[vstopi_veljavni],
+                            color='green', s=100, marker='^', label='Vstop posodica', zorder=5)
+            if len(izstopi_veljavni):
+                plt.scatter(izstopi_veljavni, gibanje[izstopi_veljavni],
+                            color='red', s=100, marker='v', label='Izstop posodica', zorder=5)
             plt.legend()
             plt.xlabel('Frame')
             plt.title('Prehodi kazalca čez posodico')
@@ -313,7 +375,7 @@ def analiza_video(vhod, izhod, izhod_graf):
 
 if __name__ == "__main__":
     analiza_video(
-        "/data/Data/patient_007/patient_007camP_1_20231109_09_35_10.mp4",
+        "/data/Data/patient_231/patient_231camP_2_20240116_14_45_25.mp4",
         "/workspace/results/output.mp4",
         "/workspace/results/kinematika.png"
     )
