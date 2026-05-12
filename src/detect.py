@@ -375,7 +375,7 @@ def analiza_video(vhod, izhod, izhod_graf):
 
 if __name__ == "__main__":
     analiza_video(
-        "/data/Data/patient_231/patient_231camP_2_20240116_14_45_25.mp4",
+        "/data/Data/patient_024/patient_024camP_2_20230511_14_12_59.mp4",
         "/workspace/results/output.mp4",
         "/workspace/results/kinematika.png"
     )

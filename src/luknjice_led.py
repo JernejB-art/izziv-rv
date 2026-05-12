@@ -166,12 +166,18 @@ class StrojStanj9HPT:
     def __init__(self, fps):
         self.fps = fps
         self.stanje = 'IDLE'
-        self.cas_zacetka = None
-        self.cas_konca = None
+        self.faza = 'VSTAVLJANJE'       # VSTAVLJANJE | CAKANJE | POSPRAVLJANJE
+        self.cas_zacetka = None         # frame: začetek ACTIVE (po blinku)
+        self.cas_konca = None           # frame: konec ACTIVE (obe polji prižgani)
+        self.cas_konec_vstavljanja = None   # frame: vsi zatiči vstavljeni
+        self.cas_zacetek_pospravljanja = None  # frame: začetek pospravljanja
         self.aktivno_obmocje = None
         self.stevilo_zatičev = 0
         self.max_luknjic_aktivno = 0
         self.min_luknjic_aktivno = 9
+        self.casi_vstavljanja = []      # časi [s] posameznih vstavljanj
+        self.casi_pospravljanja = []    # časi [s] posameznih pospravljanj
+        self._signal_vstavljanja = []   # surovi signal (frame, cas, n, faza)
         self.dogodki = []
         self._stabilnost_counter = 0
         self._zadnje_stanje_zg = None
@@ -237,6 +243,7 @@ class StrojStanj9HPT:
                 self._zabeleži_dogodek(frame_idx, cas, 'BLINK_OFF')
 
         elif self.stanje == 'ACTIVE':
+            # Določi trenutno in drugo področje
             if self.aktivno_obmocje == 'zgornje':
                 trenutno = st_zgornje
                 st_drugo = st_spodnje
@@ -244,11 +251,38 @@ class StrojStanj9HPT:
                 trenutno = st_spodnje
                 st_drugo = st_zgornje
 
-            self.min_luknjic_aktivno = min(self.min_luknjic_aktivno, trenutno)
+            # Zberi surovi signal — post-procesiramo po koncu zanke
+            self._signal_vstavljanja.append((frame_idx, cas, trenutno, self.faza))
 
-            # Konec testa: neaktivno področje mora imeti >=7 luknjic
-            # (višji prag kot PRAG_STEVILO_LUKNJIC=5) in to vsaj 4 frame-e zapored
-            # — prepreči lažni konec iz kratkotrajnega odseva ali premika roke
+            # --- Faza VSTAVLJANJE ---
+            if self.faza == 'VSTAVLJANJE':
+                self.min_luknjic_aktivno = min(self.min_luknjic_aktivno, trenutno)
+                # Prehod v CAKANJE: signal vztrajno nizek (<=1) vsaj 5 frame-ov
+                if trenutno <= 1:
+                    self._vsi_vstavljeni_counter = getattr(self, '_vsi_vstavljeni_counter', 0) + 1
+                else:
+                    self._vsi_vstavljeni_counter = 0
+                if self._vsi_vstavljeni_counter >= 5:
+                    self.faza = 'CAKANJE'
+                    self.cas_konec_vstavljanja = frame_idx
+                    self._zabeleži_dogodek(frame_idx, cas, 'VSI_VSTAVLJENI')
+
+            # --- Faza CAKANJE ---
+            elif self.faza == 'CAKANJE':
+                if trenutno >= 2:
+                    self._pospravljanje_counter = getattr(self, '_pospravljanje_counter', 0) + 1
+                else:
+                    self._pospravljanje_counter = 0
+                if self._pospravljanje_counter >= 5:
+                    self.faza = 'POSPRAVLJANJE'
+                    self.cas_zacetek_pospravljanja = frame_idx
+                    self._zabeleži_dogodek(frame_idx, cas, 'ZACETEK_POSPRAVLJANJA')
+
+            # --- Faza POSPRAVLJANJE ---
+            elif self.faza == 'POSPRAVLJANJE':
+                pass  # samo zbiramo signal, post-procesiramo po koncu
+
+            # --- Konec testa: neaktivno področje >=7 luknjic, 4 frame-e zapored ---
             pravi_konec = st_drugo >= 7
             if pravi_konec:
                 self._konec_counter = getattr(self, '_konec_counter', 0) + 1
@@ -258,7 +292,7 @@ class StrojStanj9HPT:
             if self._konec_counter >= 4:
                 self.stanje = 'DONE'
                 self.cas_konca = frame_idx
-                self.stevilo_zatičev = max(0, self.max_luknjic_aktivno - self.min_luknjic_aktivno)
+                self.stevilo_zatičev = len(self.casi_vstavljanja)
                 self._zabeleži_dogodek(frame_idx, cas, 'TEST_KONEC')
 
         elif self.stanje == 'DONE':
@@ -272,9 +306,37 @@ class StrojStanj9HPT:
 
     @property
     def cas_testa_sekunde(self):
-        if self.cas_zacetka is None or self.cas_konca is None:
+        """Skupni čas = vstavljanje + pospravljanje (brez vmesne pavze)."""
+        t_v = self.cas_vstavljanja_sekunde
+        t_p = self.cas_pospravljanja_sekunde
+        if t_v is None:
             return None
-        return (self.cas_konca - self.cas_zacetka) / self.fps
+        return (t_v or 0) + (t_p or 0)
+
+    @property
+    def cas_vstavljanja_sekunde(self):
+        """Čas od začetka do vseh zatičev vstavljenih."""
+        if self.cas_zacetka is None or self.cas_konec_vstavljanja is None:
+            return None
+        return (self.cas_konec_vstavljanja - self.cas_zacetka) / self.fps
+
+    @property
+    def cas_pospravljanja_sekunde(self):
+        """Čas od začetka pospravljanja do konca."""
+        if self.cas_zacetek_pospravljanja is None or self.cas_konca is None:
+            return None
+        return (self.cas_konca - self.cas_zacetek_pospravljanja) / self.fps
+
+    @property
+    def casi_posameznih_zatičev(self):
+        """Čas vstavljanja vsakega zatiča posebej [s]."""
+        if len(self.casi_vstavljanja) < 2:
+            return []
+        zacetek = self.cas_zacetka / self.fps if self.cas_zacetka else 0
+        casi = [self.casi_vstavljanja[0] - zacetek]
+        for i in range(1, len(self.casi_vstavljanja)):
+            casi.append(self.casi_vstavljanja[i] - self.casi_vstavljanja[i-1])
+        return casi
 
     @property
     def roka(self):
@@ -283,6 +345,68 @@ class StrojStanj9HPT:
         elif self.aktivno_obmocje == 'spodnje':
             return 'desna'
         return 'neznana'
+
+
+def postprocesiraj_casovnico(stroj, fps):
+    """
+    Post-procesira zbrani signal n_aktivno za zanesljivo zaznavo per-peg časov.
+
+    Algoritem:
+    1. Razdeli signal na VSTAVLJANJE in POSPRAVLJANJE po fazi
+    2. Zgladimo z drsečo mediano (okno 15 frame-ov ~ 0.5s)
+    3. Za vstavljanje: iščemo kdaj zglajen signal prvič pade pod N-0.5
+       (N = 9,8,7,...,1) → čas vstavljanja N-tega zatiča
+    4. Za pospravljanje: isto ampak narašča (1,2,...,9)
+    5. stevilo_zaticov = max_n - min_n (robustno, ne šteje šuma)
+    """
+    signal = stroj._signal_vstavljanja
+    if not signal:
+        return
+
+    import numpy as np
+
+    frames_v = [x[0] for x in signal if x[3] == 'VSTAVLJANJE']
+    casi_v   = [x[1] for x in signal if x[3] == 'VSTAVLJANJE']
+    n_v      = [x[2] for x in signal if x[3] == 'VSTAVLJANJE']
+
+    frames_p = [x[0] for x in signal if x[3] == 'POSPRAVLJANJE']
+    casi_p   = [x[1] for x in signal if x[3] == 'POSPRAVLJANJE']
+    n_p      = [x[2] for x in signal if x[3] == 'POSPRAVLJANJE']
+
+    def drseča_mediana(arr, okno=15):
+        result = []
+        for i in range(len(arr)):
+            z = max(0, i - okno // 2)
+            k = min(len(arr), i + okno // 2 + 1)
+            result.append(sorted(arr[z:k])[len(arr[z:k]) // 2])
+        return result
+
+    if n_v:
+        n_v_gl = drseča_mediana(n_v, okno=15)
+        max_n = max(n_v_gl)
+        min_n = min(n_v_gl)
+        stroj.stevilo_zatičev = max(0, round(max_n) - round(min_n))
+
+        # Čas vsakega vstavljanja: kdaj n_gladko prvič pade pod prag X-0.5
+        stroj.casi_vstavljanja = []
+        for prag in range(round(max_n) - 1, round(min_n) - 1, -1):
+            for i, n in enumerate(n_v_gl):
+                if n < prag + 0.5:
+                    stroj.casi_vstavljanja.append(casi_v[i])
+                    break
+
+    if n_p:
+        n_p_gl = drseča_mediana(n_p, okno=15)
+        min_np = min(n_p_gl)
+        max_np = max(n_p_gl)
+
+        # Čas vsakega pospravljanja: kdaj n_gladko prvič preseže prag X+0.5
+        stroj.casi_pospravljanja = []
+        for prag in range(round(min_np), round(max_np) + 1):
+            for i, n in enumerate(n_p_gl):
+                if n > prag + 0.5:
+                    stroj.casi_pospravljanja.append(casi_p[i])
+                    break
 
 
 def preveri_veljavnost_videa(pot_videa, n_vzorcev=20):
@@ -411,6 +535,7 @@ def analiziraj_led_luknjice(pot_videa, izhod_video=None, izhod_graf=None):
     stroj = StrojStanj9HPT(fps)
     stevila_zg = []
     stevila_sp = []
+    log_n_aktivno = []   # za diagnostiko
     frame_idx = 0
 
     while cap.isOpened():
@@ -428,6 +553,13 @@ def analiziraj_led_luknjice(pot_videa, izhod_video=None, izhod_graf=None):
         stevila_sp.append(n_sp)
 
         stanje = stroj.posodobi(frame_idx, n_zg, n_sp)
+
+        # Beležimo n_aktivno med ACTIVE fazo za diagnostiko
+        if stanje == 'ACTIVE':
+            if stroj.aktivno_obmocje == 'zgornje':
+                log_n_aktivno.append((frame_idx, n_zg, stroj.faza))
+            else:
+                log_n_aktivno.append((frame_idx, n_sp, stroj.faza))
 
         if writer is not None:
             frame = _narisi_debug(
@@ -448,19 +580,45 @@ def analiziraj_led_luknjice(pot_videa, izhod_video=None, izhod_graf=None):
     zg_glajeno = uniform_filter1d(stevila_zg, size=15)
     sp_glajeno = uniform_filter1d(stevila_sp, size=15)
 
+    # Post-procesiranje signal → zanesljivi časi zatičev
+    postprocesiraj_casovnico(stroj, fps)
+
+    # Diagnostični izpis n_aktivno med testom
+    if log_n_aktivno:
+        print("\n--- DIAGNOSTIKA n_aktivno (vsak 10. frame) ---")
+        print(f"{'Frame':>6} | {'t[s]':>6} | {'n':>3} | faza")
+        for i, (f, n, faza) in enumerate(log_n_aktivno):
+            if i % 10 == 0:
+                print(f"{f:>6} | {f/fps:>6.2f} | {n:>3} | {faza}")
+        print(f"Min n_aktivno: {min(x[1] for x in log_n_aktivno)}")
+        print(f"Max n_aktivno: {max(x[1] for x in log_n_aktivno)}")
+        print("----------------------------------------------\n")
+
     if izhod_graf:
         _narisi_graf(zg_glajeno, sp_glajeno, stroj, fps, izhod_graf)
 
+    # Vmesna pavza = skupni čas v videu - vstavljanje - pospravljanje
+    cas_pavze = None
+    if (stroj.cas_konec_vstavljanja and stroj.cas_zacetek_pospravljanja):
+        cas_pavze = (stroj.cas_zacetek_pospravljanja -
+                     stroj.cas_konec_vstavljanja) / fps
+
     rezultati = {
-        'cas_testa':       stroj.cas_testa_sekunde,
-        'stevilo_zaticov': stroj.stevilo_zatičev,
-        'roka':            stroj.roka,
-        'aktivno_obmocje': stroj.aktivno_obmocje,
-        'cas_zacetka_s':   stroj.cas_zacetka / fps if stroj.cas_zacetka else None,
-        'cas_konca_s':     stroj.cas_konca / fps if stroj.cas_konca else None,
-        'dogodki':         stroj.dogodki,
-        'stevila_zg':      stevila_zg,
-        'stevila_sp':      stevila_sp,
+        'cas_testa':                stroj.cas_testa_sekunde,
+        'cas_vstavljanja':          stroj.cas_vstavljanja_sekunde,
+        'cas_pospravljanja':        stroj.cas_pospravljanja_sekunde,
+        'cas_pavze':                cas_pavze,
+        'stevilo_zaticov':          stroj.stevilo_zatičev,
+        'casi_vstavljanja':         stroj.casi_vstavljanja,
+        'casi_pospravljanja':       stroj.casi_pospravljanja,
+        'casi_posameznih_zaticov':  stroj.casi_posameznih_zatičev,
+        'roka':                     stroj.roka,
+        'aktivno_obmocje':          stroj.aktivno_obmocje,
+        'cas_zacetka_s':            stroj.cas_zacetka / fps if stroj.cas_zacetka else None,
+        'cas_konca_s':              stroj.cas_konca / fps if stroj.cas_konca else None,
+        'dogodki':                  stroj.dogodki,
+        'stevila_zg':               stevila_zg,
+        'stevila_sp':               stevila_sp,
     }
 
     _izpisi_rezultate(rezultati)
@@ -553,12 +711,18 @@ def _narisi_graf(zg_glajeno, sp_glajeno, stroj, fps, izhod_graf):
 def _izpisi_rezultate(r):
     print("\n=== REZULTATI LED ZAZNAVE ===")
     if r['cas_testa'] is not None:
-        print(f"Čas testa:        {r['cas_testa']:.2f} s")
-        print(f"Začetek:          {r['cas_zacetka_s']:.2f} s")
-        print(f"Konec:            {r['cas_konca_s']:.2f} s")
-        print(f"Število zatičev:  {r['stevilo_zaticov']}")
-        print(f"Roka:             {r['roka']}")
-        print(f"Aktivno področje: {r['aktivno_obmocje']}")
+        print(f"Skupni čas:           {r['cas_testa']:.2f} s")
+        print(f"  Vstavljanje:        {r.get('cas_vstavljanja', 0) or 0:.2f} s")
+        print(f"  Pospravljanje:      {r.get('cas_pospravljanja', 0) or 0:.2f} s")
+        print(f"  Vmesna pavza:       {r.get('cas_pavze', 0) or 0:.2f} s  (ne šteje)")
+        print(f"Začetek:              {r['cas_zacetka_s']:.2f} s")
+        print(f"Konec:                {r['cas_konca_s']:.2f} s")
+        print(f"Število zatičev:      {r['stevilo_zaticov']}")
+        print(f"Roka:                 {r['roka']}")
+        casi_z = r.get('casi_posameznih_zaticov', [])
+        if casi_z:
+            print(f"Čas po zatičih [s]:   " +
+                  "  ".join(f"{t:.2f}" for t in casi_z))
     else:
         print("Test ni bil zaznán — preverite ROI parametre!")
     print("=============================\n")
