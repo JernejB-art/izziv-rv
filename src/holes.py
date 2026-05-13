@@ -11,7 +11,7 @@
 #                 -> timer teče, luknjice v aktivnem področju se ugašajo ko vstavljamo zatiče
 #       DONE   -> drugo področje se prižge (test končan)
 #   4. Čas testa = DONE.začetek - ACTIVE.začetek
-#   5. Število zatičev = luknjice ki so med ACTIVE prešle iz SVETLO -> TEMNO
+#   5. Število zatičev = luknjice, ki so med ACTIVE prešle iz SVETLO -> TEMNO
 
 import cv2
 import numpy as np
@@ -19,8 +19,8 @@ import re
 from scipy.ndimage import uniform_filter1d
 
 ROI_PARAMETRI = {
-    'camP_0': { 'zgornje': (0.49, 0.22, 0.68, 0.45),
-                'spodnje': (0.45, 0.73, 0.63, 0.95), },
+    'camP_0': { 'zgornje': (0.51, 0.20, 0.68, 0.40),
+                'spodnje': (0.46, 0.66, 0.60, 0.80), },
     'camP_1': { 'zgornje': (0.49, 0.06, 0.65, 0.28),
                 'spodnje': (0.50, 0.63, 0.66, 0.85), },
     'camP_2': { 'zgornje': (0.35, 0.15, 0.50, 0.30),
@@ -637,7 +637,7 @@ if __name__ == "__main__":
     import sys
 
     pot = sys.argv[1] if len(sys.argv) > 1 else \
-        "/data/Data/patient_024/patient_024camP_2_20230511_14_11_19.mp4"
+        "/data/Data/patient_024/patient_024camP_0_20230511_14_11_19.mp4"
 
     print("=== KALIBRACIJA ROI ===")
     kalibriraj_roi(pot, frame_n=10)
