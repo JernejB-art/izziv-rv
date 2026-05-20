@@ -243,15 +243,15 @@ class FSMHomografija:
 
     def nastavi_posodico(self, center_mm):
         self._center_posodice = center_mm
-        if self.verbose:
-            print(f"  [FSM-H] Center posodice: ({center_mm[0]:.1f},{center_mm[1]:.1f})mm")
+        # if self.verbose:
+        #     print(f"  [FSM-H] Center posodice: ({center_mm[0]:.1f},{center_mm[1]:.1f})mm")
 
     def nastavi_fazo(self, faza):
         if faza != self.faza_testa:
             # Preklopi samo ko je FSM v IDLE — ne prekinjaj aktivnega cikla
             if self.stanje == FSMStanje.IDLE:
-                if self.verbose:
-                    print(f"  [FSM-H] Faza: {self.faza_testa} → {faza}")
+                # if self.verbose:
+                #     print(f"  [FSM-H] Faza: {self.faza_testa} → {faza}")
                 self.faza_testa = faza
                 self._cnt = 0
             # Sicer shrani zahtevano fazo in preklopi ko dosežemo IDLE
@@ -345,9 +345,9 @@ class FSMHomografija:
         # Preklopi na čakajočo fazo ko dosežemo IDLE
         if self.stanje == FSMStanje.IDLE and hasattr(self, '_cakajoca_faza') \
                 and self._cakajoca_faza and self._cakajoca_faza != self.faza_testa:
-            if self.verbose:
-                print(f"  [FSM-H] Faza (zakasnjena): {self.faza_testa} → {self._cakajoca_faza}")
-            self.faza_testa = self._cakajoca_faza
+            # if self.verbose:
+            #     print(f"  [FSM-H] Faza (zakasnjena): {self.faza_testa} → {self._cakajoca_faza}")
+            # self.faza_testa = self._cakajoca_faza
             self._cakajoca_faza = None
             self._cnt = 0
 
@@ -510,9 +510,9 @@ class ProcesorCombined:
         faza = self.led_stroj.faza  # 'VSTAVLJANJE', 'CAKANJE', 'POSPRAVLJANJE'
         if faza == "CAKANJE":
             return "VSTAVLJANJE"
-        if faza == "POSPRAVLJANJE":
-            if self.verbose:
-                print(f"  [LED] t={frame_idx/self.led_stroj.fps:.2f}s → POSPRAVLJANJE")
+        # if faza == "POSPRAVLJANJE":
+        #     if self.verbose:
+        #         print(f"  [LED] t={frame_idx/self.led_stroj.fps:.2f}s → POSPRAVLJANJE")
         return faza
 
     # ── OVERLAY ─────────────────────────────────────────────────────────
@@ -592,7 +592,7 @@ class ProcesorCombined:
                 self.izhod_video, cv2.VideoWriter_fourcc(*"mp4v"),
                 fps, (sirina, visina))
 
-        log_casi, log_xs, log_ys, log_vel = [], [], [], []
+        log_casi, log_xs, log_ys, log_vel, log_dpos = [], [], [], [], []
         frame_idx = 0
         faza_trenutna = "NEZNANO"
 
@@ -652,6 +652,12 @@ class ProcesorCombined:
                         log_xs.append(roka_mm[0])
                         log_ys.append(roka_mm[1])
                         log_vel.append(vel)
+                        if self.hom.center_posodice_mm:
+                            d_pos_val = np.linalg.norm(
+                                np.array(roka_mm) - np.array(self.hom.center_posodice_mm))
+                            log_dpos.append(d_pos_val)
+                        else:
+                            log_dpos.append(np.nan)
                 if self._os_ok and self.os:
                     s_val = self.os.projekcija(hand_img)
                     self.traj1d.dodaj(s_val, t_s)
@@ -664,16 +670,16 @@ class ProcesorCombined:
                     s_val, t_s, self.traj1d.zadnja_hitrost(), self.traj1d)
 
             # Diagnostika vsakih 75 frame-ov
-            if self.verbose and frame_idx % 75 == 0 and frame_idx > 0:
-                hst = self.fsm_hom.stanje if self.fsm_hom else "-"
-                mm_str = f"({roka_mm[0]:.0f},{roka_mm[1]:.0f})mm" if roka_mm else "-"
-                d_pos  = "-"
-                if roka_mm and self.hom.center_posodice_mm:
-                    d_pos = f"{np.linalg.norm(np.array(roka_mm) - np.array(self.hom.center_posodice_mm)):.0f}mm"
-                n_v = len(self.fsm_hom.cicli_vstavljanje)   if self.fsm_hom else 0
-                n_p = len(self.fsm_hom.cicli_pospravljanje) if self.fsm_hom else 0
-                print(f"  [t={t_s:.1f}s] {faza_trenutna:15s} roka={mm_str} "
-                      f"d_pos={d_pos} H={hst} V={n_v} P={n_p}")
+            # if self.verbose and frame_idx % 75 == 0 and frame_idx > 0:
+            #     hst = self.fsm_hom.stanje if self.fsm_hom else "-"
+            #     mm_str = f"({roka_mm[0]:.0f},{roka_mm[1]:.0f})mm" if roka_mm else "-"
+            #     d_pos  = "-"
+            #     if roka_mm and self.hom.center_posodice_mm:
+            #         d_pos = f"{np.linalg.norm(np.array(roka_mm) - np.array(self.hom.center_posodice_mm)):.0f}mm"
+            #     n_v = len(self.fsm_hom.cicli_vstavljanje)   if self.fsm_hom else 0
+            #     n_p = len(self.fsm_hom.cicli_pospravljanje) if self.fsm_hom else 0
+            #     print(f"  [t={t_s:.1f}s] {faza_trenutna:15s} roka={mm_str} "
+            #           f"d_pos={d_pos} H={hst} V={n_v} P={n_p}")
 
             if writer is not None:
                 frame = self._narisi_overlay(
@@ -710,17 +716,6 @@ class ProcesorCombined:
                                casi_1d, s_raw, s_gl, vel1d,
                                cicli_v, cicli_p)
 
-        r_y = analiziraj_iz_rezultatov({
-            'casi_hom':  casi_hom,
-            'traj_mm':   list(zip(xs_arr, ys_arr)) if len(xs_arr) > 0 else [],
-            'led_stroj': self.led_stroj,
-        }, verbose=self.verbose)
-
-        if r_y and self.izhod_graf:
-            from analizator_y import AnalizatorYOsi
-            AnalizatorYOsi(fps=fps).narisi_graf(
-                r_y, self.izhod_graf.replace('.png', '_y.png'))
-
         return {
             "cicli":                cicli_vse,
             "cicli_vstavljanje":    cicli_v,
@@ -739,8 +734,8 @@ class ProcesorCombined:
             "casi_hom":             casi_hom,
             "traj_mm":              list(zip(xs_arr, ys_arr)) if len(xs_arr) > 0 else [],
             "vel_mm_s":             vel_arr,
-            "cicli_vstavljanje_y":   r_y['cicli_vstavljanje']   if r_y else [],
-            "cicli_pospravljanje_y": r_y['cicli_pospravljanje']  if r_y else [],
+            "cicli_vstavljanje_y":   [],
+            "cicli_pospravljanje_y": [],
         }
 
     # ── IZPIS ───────────────────────────────────────────────────────────
@@ -753,21 +748,21 @@ class ProcesorCombined:
         print(f"px/mm:                 {self.hom.px_per_mm}")
         print(f"Center posodice:       {self.hom.center_posodice_mm}")
 
-        if cicli_v:
-            print(f"\n--- VSTAVLJANJE ---")
-            for i, c in enumerate(cicli_v):
-                print(f"  V{i+1}: pickup={c.get('pickup_duration',0) or 0:.3f}s "
-                      f"premik={c.get('movement_time',0) or 0:.3f}s "
-                      f"insert={c.get('insert_duration',0) or 0:.3f}s "
-                      f"luk={c.get('target_hole','?')}")
+        # if cicli_v:
+        #     print(f"\n--- VSTAVLJANJE ---")
+        #     for i, c in enumerate(cicli_v):
+        #         print(f"  V{i+1}: pickup={c.get('pickup_duration',0) or 0:.3f}s "
+        #               f"premik={c.get('movement_time',0) or 0:.3f}s "
+        #               f"insert={c.get('insert_duration',0) or 0:.3f}s "
+        #               f"luk={c.get('target_hole','?')}")
 
-        if cicli_p:
-            print(f"\n--- POSPRAVLJANJE ---")
-            for i, c in enumerate(cicli_p):
-                print(f"  P{i+1}: pickup={c.get('pickup_duration',0) or 0:.3f}s "
-                      f"premik={c.get('movement_time',0) or 0:.3f}s "
-                      f"insert={c.get('insert_duration',0) or 0:.3f}s "
-                      f"luk={c.get('target_hole','?')}")
+        # if cicli_p:
+        #     print(f"\n--- POSPRAVLJANJE ---")
+        #     for i, c in enumerate(cicli_p):
+        #         print(f"  P{i+1}: pickup={c.get('pickup_duration',0) or 0:.3f}s "
+        #               f"premik={c.get('movement_time',0) or 0:.3f}s "
+        #               f"insert={c.get('insert_duration',0) or 0:.3f}s "
+        #               f"luk={c.get('target_hole','?')}")
 
         # LED stroj rezultati
         if self.led_stroj and self.led_stroj.cas_testa_sekunde:
@@ -928,7 +923,7 @@ class ProcesorCombined:
 if __name__ == "__main__":
     import sys
     pot = sys.argv[1] if len(sys.argv) > 1 else \
-        "/data/Data/patient_336/patient_336camP_2_20240521_10_46_48.mp4"
+        "/data/Data/patient_078/patient_078camP_0_20231116_11_14_00.mp4"
     p = ProcesorCombined(
         pot_videa=pot,
         razmik_mm=32,

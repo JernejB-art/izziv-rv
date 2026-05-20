@@ -302,7 +302,7 @@ class StrojStanj9HPT:
 
     def _zabeleži_dogodek(self, frame_idx, cas, tip):
         self.dogodki.append({'frame': frame_idx, 'cas': cas, 'tip': tip})
-        print(f"  [HPT] Frame {frame_idx:4d} | t={cas:6.2f}s | {tip}")
+        #print(f"  [HPT] Frame {frame_idx:4d} | t={cas:6.2f}s | {tip}")
 
     @property
     def cas_testa_sekunde(self):
