@@ -262,7 +262,7 @@ class StrojStanj9HPT:
                     self._vsi_vstavljeni_counter = getattr(self, '_vsi_vstavljeni_counter', 0) + 1
                 else:
                     self._vsi_vstavljeni_counter = 0
-                if self._vsi_vstavljeni_counter >= 5:
+                if self._vsi_vstavljeni_counter >= 15:
                     self.faza = 'CAKANJE'
                     self.cas_konec_vstavljanja = frame_idx
                     self._zabeleži_dogodek(frame_idx, cas, 'VSI_VSTAVLJENI')

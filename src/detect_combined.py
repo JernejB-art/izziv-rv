@@ -40,7 +40,7 @@ from luknjice_led import (
     ROI_PARAMETRI, je_obmocje_prizgano, StrojStanj9HPT,
     postprocesiraj_casovnico
 )
-
+from analizator_y import analiziraj_iz_rezultatov
 
 # ===== STRATEGIJA =====
 
@@ -60,7 +60,7 @@ SG_RED        = 2
 PICKUP_ROI_MM = 60.0   # polmer posodice za pobiranje
 INSERT_ROI_MM = 20.0   # polmer luknjice za vstavljanje
 EXIT_ROI_MM   = 75.0   # izhod iz posodice
-EXIT_HOL_MM   = 35.0   # izhod iz luknjice
+EXIT_HOL_MM   = 25.0   # izhod iz luknjice
 
 # Minimalni časi faz (prepreči lažne kratke cikle)
 MIN_PICKUP_S  = 0.20
@@ -510,6 +510,9 @@ class ProcesorCombined:
         faza = self.led_stroj.faza  # 'VSTAVLJANJE', 'CAKANJE', 'POSPRAVLJANJE'
         if faza == "CAKANJE":
             return "VSTAVLJANJE"
+        if faza == "POSPRAVLJANJE":
+            if self.verbose:
+                print(f"  [LED] t={frame_idx/self.led_stroj.fps:.2f}s → POSPRAVLJANJE")
         return faza
 
     # ── OVERLAY ─────────────────────────────────────────────────────────
@@ -606,14 +609,10 @@ class ProcesorCombined:
             #   vsak frame pred init, nato vsakih 5 frame-ov
             # LED STROJ pa mora dobiti n_zg/n_sp VSAK frame
             #   (trend za fazo zahteva kontinuiran signal)
-            if not self._hom_ok or frame_idx % 5 == 0:
-                n_zg, n_sp, c_zg, c_sp = self._preberi_luknjice(frame, sirina, visina)
-                self._zadnji_n_zg = n_zg
-                self._zadnji_n_sp = n_sp
-            else:
-                # Zaznava luknjic se preskoči, a LED stroj dobi zadnje vrednosti
-                n_zg = getattr(self, '_zadnji_n_zg', 0)
-                n_sp = getattr(self, '_zadnji_n_sp', 0)
+            # LED zaznava VSAK frame — LED stroj potrebuje kontinuiran signal
+            n_zg, n_sp, c_zg, c_sp = self._preberi_luknjice(frame, sirina, visina)
+            # Po inicializaciji homografije preskoči računanje centrov (performance)
+            if self._hom_ok:
                 c_zg, c_sp = [], []
 
             # Blink inicializacija homografije
@@ -624,8 +623,16 @@ class ProcesorCombined:
             faza_trenutna = self._posodobi_led_stroj(frame_idx, n_zg, n_sp)
 
             # Posreduj fazo FSM-u
+            # Po posodobitvi LED stroja, vedno preveri fazo
+            # (ne samo ko je roka zaznana)
             if self.fsm_hom and faza_trenutna != "NEZNANO":
                 self.fsm_hom.nastavi_fazo(faza_trenutna)
+                # Če FSM čaka na IDLE za preklop, ga prisilno sprosti po 2s
+                if (self.fsm_hom._cakajoca_faza is not None and
+                        self.fsm_hom.trenutni.pickup_start is not None and
+                        (t_s - self.fsm_hom.trenutni.pickup_start) > 2.0):
+                    self.fsm_hom.stanje = FSMStanje.IDLE
+                    self.fsm_hom._cnt = 0
 
             # Sledenje roke
             hand_img, lm = None, None
@@ -703,6 +710,17 @@ class ProcesorCombined:
                                casi_1d, s_raw, s_gl, vel1d,
                                cicli_v, cicli_p)
 
+        r_y = analiziraj_iz_rezultatov({
+            'casi_hom':  casi_hom,
+            'traj_mm':   list(zip(xs_arr, ys_arr)) if len(xs_arr) > 0 else [],
+            'led_stroj': self.led_stroj,
+        }, verbose=self.verbose)
+
+        if r_y and self.izhod_graf:
+            from analizator_y import AnalizatorYOsi
+            AnalizatorYOsi(fps=fps).narisi_graf(
+                r_y, self.izhod_graf.replace('.png', '_y.png'))
+
         return {
             "cicli":                cicli_vse,
             "cicli_vstavljanje":    cicli_v,
@@ -721,6 +739,8 @@ class ProcesorCombined:
             "casi_hom":             casi_hom,
             "traj_mm":              list(zip(xs_arr, ys_arr)) if len(xs_arr) > 0 else [],
             "vel_mm_s":             vel_arr,
+            "cicli_vstavljanje_y":   r_y['cicli_vstavljanje']   if r_y else [],
+            "cicli_pospravljanje_y": r_y['cicli_pospravljanje']  if r_y else [],
         }
 
     # ── IZPIS ───────────────────────────────────────────────────────────
@@ -908,7 +928,7 @@ class ProcesorCombined:
 if __name__ == "__main__":
     import sys
     pot = sys.argv[1] if len(sys.argv) > 1 else \
-        "/data/Data/patient_024/patient_024camP_1_20230511_14_11_19.mp4"
+        "/data/Data/patient_336/patient_336camP_2_20240521_10_46_48.mp4"
     p = ProcesorCombined(
         pot_videa=pot,
         razmik_mm=32,

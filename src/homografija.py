@@ -106,8 +106,14 @@ class BoardHomografija:
         razmik_px = float(np.median(razdalje[:min(12,len(razdalje))]))
         if razmik_px < 1:
             return False
-        px_per_mm_ocena   = razmik_px / self.razmik_mm
-        razdalja_mm_ocena = razdalja_px / px_per_mm_ocena
+        px_per_mm_ocena = razmik_px / self.razmik_mm
+
+        # Izmeri razdaljo med mrežama v pravem mm prostoru
+        # z začasno homografijo samo iz zgornje mreže (world_A)
+        world_A_temp = self.world_A[:n_zg]
+        H_temp, _ = cv2.findHomography(razv_zg, world_A_temp, 0)
+        razdalja_mm_ocena = 275.0  # fizično izmerjena razdalja med centroma mrež (mm)
+
         world_A = self.world_A[:n_zg]
         world_B = np.array([(s*self.razmik_mm, razdalja_mm_ocena+v*self.razmik_mm)
                              for v in range(3) for s in range(3)],
@@ -179,10 +185,7 @@ class BoardHomografija:
         if not np.any(mask): return
         self._px_per_mm = float(np.median(d_img[mask] / d_world[mask]))
 
-    def get_luknjice_mm(self):
-        if self.world_B is not None:
-            return np.vstack([self.world_A, self.world_B])
-        return self.world_A.copy()
+    def get_luknjice_mm(self): return self.world_A.copy()
 
     def get_luknjice_img(self):
         if not self._veljavna: return None
@@ -222,12 +225,13 @@ class BoardHomografija:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0,255,200), 1)
 
         # --- Spodnja mreža (posodica stran): fiksirana mesta ---
+        # Spodnja mreža — tudi luknjice, enaki krogi kot zgornja
         if self._centri_sp_img is not None:
             for i, (cx, cy) in enumerate(self._centri_sp_img.astype(int)):
-                cv2.circle(out, (cx,cy), r_luk, (100,180,255), 1)   # ROI krog
-                cv2.circle(out, (cx,cy), 5, (100,180,255), -1)
-                cv2.putText(out, str(i), (cx+5,cy-4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (100,180,255), 1)
+                cv2.circle(out, (cx,cy), r_luk, (0,200,100), 1)   # enak zeleni ROI krog
+                cv2.circle(out, (cx,cy), 5, (0,255,200), -1)
+                cv2.putText(out, str(i+9), (cx+5,cy-4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0,255,200), 1)
 
         # --- Center posodice ---
         if self.center_posodice_mm is not None:

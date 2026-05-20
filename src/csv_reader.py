@@ -11,7 +11,7 @@ def preberi_csv_pacienta(pot_do_podatkov, id_pacienta):
     if not datoteke:
         raise FileNotFoundError(f'CSV za {id_pacienta} ni najden')
 
-    pot_csv = datoteke[0]
+    pot_csv = datoteke[1]
     print(f'Berem: {pot_csv}')
 
     with open(pot_csv, newline='') as f:
@@ -88,5 +88,5 @@ def izpisi_rezultate(r):
         print(f"{i+1:>6} | " + " | ".join(f"{v:>8.2f}" for v in vrs))
 
 if __name__ == "__main__":
-    rezultat = preberi_csv_pacienta('/data/Data/', 'patient_167')
+    rezultat = preberi_csv_pacienta('/data/Data/', 'patient_024')
     izpisi_rezultate(rezultat)
