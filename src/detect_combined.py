@@ -82,25 +82,40 @@ class SledilecRoke:
         self.mp_h  = mp.solutions.hands
         self.mp_dr = mp.solutions.drawing_utils
         self.hands = self.mp_h.Hands(
-            static_image_mode=False, max_num_hands=1,
+            static_image_mode=False, max_num_hands=2,
             min_detection_confidence=min_zaupanje,
             min_tracking_confidence=0.5)
 
-    def zazaj(self, frame, nacin=None):
+    def zazaj(self, frame, nacin=None, aktivna_mreza=None):  # parameter tukaj
         if nacin is None:
             nacin = LANDMARK_NACIN
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = self.hands.process(rgb)
         if not res.multi_hand_landmarks:
             return None, None
-        lm  = res.multi_hand_landmarks[0]
+
+        # Izberi pravo roko glede na aktivno mrežo
+        idx_roke = 0
+        if aktivna_mreza and res.multi_handedness:
+            zelena = "Left" if aktivna_mreza == "ZG" else "Right"
+            for i, h in enumerate(res.multi_handedness):
+                if h.classification[0].label == zelena:
+                    idx_roke = i
+                    break
+        if idx_roke >= len(res.multi_hand_landmarks):
+            idx_roke = 0
+
+        lm = res.multi_hand_landmarks[idx_roke]  # najprej določi lm
         h, w = frame.shape[:2]
-        if nacin == "WRIST":
+        if nacin == "WRIST":                      # potem izračunaj pt iz pravega lm
             pt = lm.landmark[self.mp_h.HandLandmark.WRIST]
         elif nacin == "MCP":
             pt = lm.landmark[self.mp_h.HandLandmark.INDEX_FINGER_MCP]
         else:
             pt = lm.landmark[self.mp_h.HandLandmark.INDEX_FINGER_TIP]
+        if res.multi_handedness:
+            for i, hand_cls in enumerate(res.multi_handedness):
+                print(f"[DBG-ROKA] i={i} label={hand_cls.classification[0].label} score={hand_cls.classification[0].score:.2f}")
         return (int(pt.x * w), int(pt.y * h)), lm
 
     def narisi(self, frame, lm):
@@ -385,6 +400,7 @@ class ProcesorCombined:
         self.izhod_video = izhod_video
         self.izhod_graf  = izhod_graf
         self.verbose     = verbose
+        self._aktivno_zaklenjeno = False
 
         import os as _os
         self.kamera    = doloci_kamero(_os.path.basename(pot_videa))
@@ -498,10 +514,22 @@ class ProcesorCombined:
         # Določi aktivno področje
         zg_on = je_obmocje_prizgano(n_zg)
         sp_on = je_obmocje_prizgano(n_sp)
-        if zg_on and not sp_on:
-            self._aktivno = "zgornje"
-        elif sp_on and not zg_on:
-            self._aktivno = "spodnje"
+        if not getattr(self, '_aktivno_zaklenjeno', False):
+            if zg_on and not sp_on:
+                self._aktivno = "zgornje"
+                self._aktivno_zaklenjeno = True  # zakleni po prvi določitvi
+                if self.verbose:
+                    print(f"[Combined] Aktivna roka zakljenjena: LEVA (ZG)")
+            elif sp_on and not zg_on:
+                self._aktivno = "spodnje"
+                self._aktivno_zaklenjeno = True
+                if self.verbose:
+                    print(f"[Combined] Aktivna roka zakljenjena: DESNA (SP)")
+        
+        if not self._aktivno_zaklenjeno:
+            print(f"[DBG] aktivno={self._aktivno} zg={n_zg} sp={n_sp}")
+        else:
+            print(f"[DBG] ZAKLENJENO aktivno={self._aktivno}")
 
         # Posodobi LED stroj
         self.led_stroj.posodobi(frame_idx, n_zg, n_sp)
@@ -634,10 +662,11 @@ class ProcesorCombined:
                     self.fsm_hom.stanje = FSMStanje.IDLE
                     self.fsm_hom._cnt = 0
 
-            # Sledenje roke
+            # Sledenje roke — samo po blinku (ko je aktivna_mreza znana)
             hand_img, lm = None, None
-            if self.sledilec:
-                hand_img, lm = self.sledilec.zazaj(frame)
+            if self._aktivno is not None and self.sledilec:
+                aktivna_mreza = 'ZG' if self._aktivno == 'zgornje' else 'SP'
+                hand_img, lm = self.sledilec.zazaj(frame, aktivna_mreza=aktivna_mreza)
 
             roka_mm = None
             s_val   = None

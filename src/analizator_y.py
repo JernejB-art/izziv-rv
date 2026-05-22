@@ -92,14 +92,107 @@ class AnalizatorYOsi:
         Pregleda signal frame po frame in vrne seznam obiskov con.
         Vsak obisk = dict z:
             cona, t_start, t_end, t_ekstrem, y_ekstrem, i_ekstrem
-        Filtrira obiske krajše od MIN_CAS_V_CONI.
+
+        Za obiske CONA_LUK daljše od 2*MIN_CAS_DRUGI_EXT se zaznata
+        DVA ekstrema: prvi v prvih MIN_CAS_DRUGI_EXT sekundah (vstavljanje)
+        in drugi v preostalem času (pobiranje za pospravljanje).
+        S tem se reši prehod vstavljanje→pospravljanje znotraj iste cone luknjic.
         """
+        MIN_CAS_DRUGI_EXT = 0.5   # s — okno za prvi ekstrem v luknjicah
         min_frames = max(2, int(MIN_CAS_V_CONI * self.fps))
+        okno_frames = max(2, int(MIN_CAS_DRUGI_EXT * self.fps))
+
         obiski = []
         trenutna_cona = CONA_NIK
         i_start = 0
         tek_ext_y = None
         tek_ext_i = None
+
+        def zakljuci_obisk(i_konec):
+            """Zaključi tekoči obisk in ga doda v seznam."""
+            if trenutna_cona is None or tek_ext_i is None:
+                return
+            dolzina = i_konec - i_start
+            if dolzina < min_frames:
+                return
+
+            # Pri 9. obisku luknjic: razdeli na vstavljanje + pobiranje
+            # Vstavljanje = prvi ekstrem (min/max Y) v coni
+            # Pobiranje   = zadnji frame pred konsistentnim dvigom/spustom
+            #               nazaj proti meji (prag = TOLERANCE_PREHOD mm)
+            TOLERANCE_PREHOD = 15.0  # mm — koliko se mora signal premakniti
+                                     # od ekstrema da šteje kot začetek pobiranja
+            n_luk_do_zdaj = sum(1 for o in obiski if o['cona'] == CONA_LUK)
+            je_deveti_luk = (n_luk_do_zdaj == 8)
+            if trenutna_cona == CONA_LUK and je_deveti_luk:
+                tip = self._ekstrem_cone(CONA_LUK)
+                seg = ys_gl[i_start:i_konec]
+
+                # Prvi ekstrem = vstavljanje
+                if tip == 'min':
+                    i_e1_rel = int(np.argmin(seg))
+                else:
+                    i_e1_rel = int(np.argmax(seg))
+                i_e1 = i_start + i_e1_rel
+                y_e1 = ys_gl[i_e1]
+
+                # Drugi "ekstrem" = pobiranje:
+                # točka kjer signal po ekstremu pride do blizu meje cone
+                # prag je relativen glede na mejo (ne ekstrem) — robustno
+                # ZG: signal se mora dvigniti do meja_A - TOLERANCE_PREHOD
+                # SP: signal se mora spustiti do meja_B + TOLERANCE_PREHOD
+                MIN_CAS_PRED_POBIRANJEM = 0.2  # s — minimalni čas po ekstremu
+                min_zamik = max(1, int(MIN_CAS_PRED_POBIRANJEM * self.fps))
+                i_e2 = i_e1  # fallback
+                if tip == 'min':
+                    # ZG: luknjice so pri majhnem Y, meja je meja_A
+                    prag = self.meja_A - TOLERANCE_PREHOD
+                    for k in range(i_e1 + min_zamik, i_konec):
+                        if ys_gl[k] >= prag:
+                            i_e2 = k
+                            break
+                else:
+                    # SP: luknjice so pri velikem Y, meja je meja_B
+                    prag = self.meja_B + TOLERANCE_PREHOD
+                    for k in range(i_e1 + min_zamik, i_konec):
+                        if ys_gl[k] <= prag:
+                            i_e2 = k
+                            break
+
+                if i_e2 > i_e1:
+                    # Prvi ekstrem — vstavljanje
+                    obiski.append({
+                        'cona':      CONA_LUK,
+                        't_start':   casi[i_start],
+                        't_end':     casi[i_e2 - 1],
+                        't_ekstrem': casi[i_e1],
+                        'y_ekstrem': y_e1,
+                        'i_ekstrem': i_e1,
+                        'podvrsta':  'vstavljanje',
+                    })
+                    # Drugi — pobiranje
+                    obiski.append({
+                        'cona':      CONA_LUK,
+                        't_start':   casi[i_e2],
+                        't_end':     casi[i_konec - 1],
+                        't_ekstrem': casi[i_e2],
+                        'y_ekstrem': ys_gl[i_e2],
+                        'i_ekstrem': i_e2,
+                        'podvrsta':  'pobiranje',
+                    })
+                    return
+                # Če prag ni bil dosežen — en sam obisk (fallback)
+
+            # Normalen obisk — en ekstrem
+            obiski.append({
+                'cona':      trenutna_cona,
+                't_start':   casi[i_start],
+                't_end':     casi[i_konec - 1],
+                't_ekstrem': casi[tek_ext_i],
+                'y_ekstrem': tek_ext_y,
+                'i_ekstrem': tek_ext_i,
+                'podvrsta':  'normalen',
+            })
 
         for i in range(len(casi)):
             t = casi[i]
@@ -112,25 +205,12 @@ class AnalizatorYOsi:
             cona = self._katera_cona(y)
 
             if cona != trenutna_cona:
-                # Zaključi prejšnji obisk
-                if trenutna_cona is not None and tek_ext_i is not None:
-                    dolzina = i - i_start
-                    if dolzina >= min_frames:
-                        obiski.append({
-                            'cona':      trenutna_cona,
-                            't_start':   casi[i_start],
-                            't_end':     casi[i - 1],
-                            't_ekstrem': casi[tek_ext_i],
-                            'y_ekstrem': tek_ext_y,
-                            'i_ekstrem': tek_ext_i,
-                        })
-                # Začni nov obisk
+                zakljuci_obisk(i)
                 trenutna_cona = cona
                 i_start = i
                 tek_ext_y = y if cona is not None else None
                 tek_ext_i = i if cona is not None else None
             elif cona is not None:
-                # Posodobi tekoči ekstrem
                 tip = self._ekstrem_cone(cona)
                 if tip == 'max' and y > tek_ext_y:
                     tek_ext_y = y
@@ -139,19 +219,7 @@ class AnalizatorYOsi:
                     tek_ext_y = y
                     tek_ext_i = i
 
-        # Zaključi zadnji obisk
-        if trenutna_cona is not None and tek_ext_i is not None:
-            dolzina = len(casi) - i_start
-            if dolzina >= min_frames:
-                obiski.append({
-                    'cona':      trenutna_cona,
-                    't_start':   casi[i_start],
-                    't_end':     casi[-1],
-                    't_ekstrem': casi[tek_ext_i],
-                    'y_ekstrem': tek_ext_y,
-                    'i_ekstrem': tek_ext_i,
-                })
-
+        zakljuci_obisk(len(casi))
         return obiski
 
     def _sestavi_cikle(self, obiski, faza, verbose):
@@ -459,7 +527,7 @@ def analiziraj_iz_rezultatov(rezultati_combined, verbose=True):
                   f"B={analizator.meja_B:.0f}mm  "
                   f"[mreza={analizator.aktivna_mreza}]")
 
-    return analizator.analiziraj(
+    rezultat = analizator.analiziraj(
         casi_hom, xs_mm, ys_mm,
         t_zacetek=t_zacetek,
         t_preklop_pospravljanja=t_preklop,
@@ -467,6 +535,207 @@ def analiziraj_iz_rezultatov(rezultati_combined, verbose=True):
         verbose=verbose,
     )
 
+    if rezultat:
+        # t_blink_on in t_blink_off iz LED
+        t_blink_on  = t_zacetek
+        t_blink_off = t_konec
+
+        if verbose:
+            print(f"\n[Časovnik] t_blink_on={t_blink_on}  t_konec_led={t_blink_off}")
+
+        casi_zaticev = izracunaj_case_zaticev(
+            rezultat,
+            t_blink_on=t_blink_on,
+            t_blink_off=t_blink_off,  # t_konec iz LED = ko zasvetita obe mreži
+            verbose=verbose,
+        )
+        rezultat['casi_zaticev'] = casi_zaticev
+
+    return rezultat
+
+
+
+# ===== ČASOVNIK POSAMEZNIH ZATIČEV =====
+
+def izracunaj_case_zaticev(rezultat, t_blink_on=None, t_blink_off=None,
+                            verbose=True):
+    """
+    Iz rezultata analiziraj() izračuna čase posameznih zatičev.
+
+    Vstavljanje:
+      zatič 1:   t_blink_on → insert_complete[0]
+                 (če t_blink_on ni na voljo: pickup_start[0] → insert_complete[0])
+      zatič 2-9: insert_complete[i-1] → insert_complete[i]
+
+    Pospravljanje:
+      zatič 1:   insert_complete zadnjega vstavljanja → insert_complete[0] pospravljanja
+                 (čas do prvega ekstrema posodice — možna čakalna pavza)
+      zatič 2-9: insert_complete[i-1] → insert_complete[i]
+      zadnji:    insert_complete[8] → t_blink_off
+                 (če t_blink_off ni na voljo: insert_complete[8])
+
+    Vrne dict:
+      casi_v:       list časov [s] za vsakega od 9 zatičev vstavljanja
+      casi_p:       list časov [s] za vsakega od 9 zatičev pospravljanja
+      t_skupaj_v:   skupni čas vstavljanja
+      t_skupaj_p:   skupni čas pospravljanja
+      t_skupaj:     skupni čas testa
+      t_reakcija:   čas od blink_on do prvega ekstrema posodice (reakcijski čas)
+      podrobno_v:   list dict-ov z t_start, t_end, trajanje za vsak zatič
+      podrobno_p:   list dict-ov z t_start, t_end, trajanje za vsak zatič
+    """
+    cicli_v = rezultat.get('cicli_vstavljanje', [])
+    cicli_p = rezultat.get('cicli_pospravljanje', [])
+
+    # ── VSTAVLJANJE ──────────────────────────────────────────────────────────
+
+    casi_v    = []
+    podrobno_v = []
+
+    # Vstavljanje: prehod meje → prehod meje (t_start obiška luknjic)
+    t_meja_v_end = cicli_v[-1]['insert_complete'] if cicli_v else None
+    obiski_luk_v = [o for o in rezultat.get('_obiski', [])
+                    if o['cona'] == 'LUK'
+                    and (t_meja_v_end is None or o['t_start'] <= t_meja_v_end + 1.0)]
+
+    for i, c in enumerate(cicli_v):
+        if i == 0:
+            # Zatič 1: od BLINK ON do prehoda meje luknjic[0]
+            t_start = t_blink_on if t_blink_on is not None else c['pickup_start']
+        else:
+            # Zatič 2-9: od prehoda meje luknjic[i-1] do prehoda meje luknjic[i]
+            t_start = (obiski_luk_v[i - 1]['t_start']
+                       if i - 1 < len(obiski_luk_v)
+                       else cicli_v[i - 1]['insert_complete'])
+
+        t_end = (obiski_luk_v[i]['t_start']
+                 if i < len(obiski_luk_v)
+                 else c['insert_complete'])
+
+        trajanje = t_end - t_start
+        casi_v.append(trajanje)
+        podrobno_v.append({
+            'zatic':    i + 1,
+            't_start':  t_start,
+            't_end':    t_end,
+            'trajanje': trajanje,
+        })
+
+        if verbose:
+            print(f"  [V] Zatič {i+1:2d}: {t_start:.2f}→{t_end:.2f}s  "
+                  f"t={trajanje:.3f}s")
+
+    # ── POSPRAVLJANJE ─────────────────────────────────────────────────────────
+
+    casi_p    = []
+    podrobno_p = []
+
+    # t_start prvega pospravljanja = ekstrem zadnjega vstavljanja (luknjice)
+    t_konec_vstavljanja = (cicli_v[-1]['insert_complete']
+                           if cicli_v else None)
+
+    for i, c in enumerate(cicli_p):
+        if i == 0:
+            # Zatič 1: od ekstrema zadnjih luknjic do ekstrema posodice 1. pospravljanja
+            t_start = t_konec_vstavljanja if t_konec_vstavljanja else c['pickup_start']
+        else:
+            # Zatič 2-9: od ekstrema posodice[i-1] do ekstrema posodice[i]
+            t_start = cicli_p[i - 1]['insert_complete']
+
+        t_end = c['insert_complete']
+        trajanje = t_end - t_start
+        casi_p.append(trajanje)
+        podrobno_p.append({
+            'zatic':    i + 1,
+            't_start':  t_start,
+            't_end':    t_end,
+            'trajanje': trajanje,
+        })
+
+        if verbose:
+            print(f"  [P] Zatič {i+1:2d}: {t_start:.2f}→{t_end:.2f}s  "
+                  f"t={trajanje:.3f}s")
+
+    # ── SKUPNI ČASI ───────────────────────────────────────────────────────────
+
+    t_skupaj_v = sum(casi_v) if casi_v else 0.0
+    t_skupaj_p = sum(casi_p) if casi_p else 0.0
+    t_skupaj   = t_skupaj_v + t_skupaj_p
+
+    # Reakcijski čas: blink_on → prvi ekstrem posodice (pickup_start prvega vstavljanja)
+    t_reakcija = None
+    if t_blink_on is not None and cicli_v:
+        t_reakcija = cicli_v[0]['pickup_start'] - t_blink_on
+
+    if verbose:
+        print(f"\n  Vstavljanje skupaj:   {t_skupaj_v:.2f}s  "
+              f"({len(casi_v)}/9 zatičev)")
+        print(f"  Pospravljanje skupaj: {t_skupaj_p:.2f}s  "
+              f"({len(casi_p)}/9 zatičev)")
+        print(f"  Skupaj test:          {t_skupaj:.2f}s")
+        if t_reakcija is not None:
+            print(f"  Reakcijski čas:       {t_reakcija:.3f}s")
+
+    return {
+        'casi_v':       casi_v,
+        'casi_p':       casi_p,
+        't_skupaj_v':   t_skupaj_v,
+        't_skupaj_p':   t_skupaj_p,
+        't_skupaj':     t_skupaj,
+        't_reakcija':   t_reakcija,
+        'podrobno_v':   podrobno_v,
+        'podrobno_p':   podrobno_p,
+        'n_v':          len(casi_v),
+        'n_p':          len(casi_p),
+    }
+
+
+def narisi_graf_casovnik(casi_zaticev, izhod_pot=None):
+    """
+    Nariše stolpični graf časov posameznih zatičev za vstavljanje in pospravljanje.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    casi_v = casi_zaticev['casi_v']
+    casi_p = casi_zaticev['casi_p']
+
+    fig, axs = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle('Časi posameznih zatičev', fontsize=12)
+
+    x_v = np.arange(1, len(casi_v) + 1)
+    x_p = np.arange(1, len(casi_p) + 1)
+
+    axs[0].bar(x_v, casi_v, color='steelblue', alpha=0.8)
+    axs[0].axhline(np.mean(casi_v) if casi_v else 0,
+                   color='navy', lw=1.5, ls='--',
+                   label=f'Povprečje: {np.mean(casi_v):.2f}s')
+    axs[0].set_title(f'Vstavljanje  (skupaj: {casi_zaticev["t_skupaj_v"]:.1f}s)')
+    axs[0].set_xlabel('Zatič #')
+    axs[0].set_ylabel('Čas [s]')
+    axs[0].set_xticks(x_v)
+    axs[0].legend(fontsize=9)
+    axs[0].grid(alpha=0.3, axis='y')
+
+    axs[1].bar(x_p, casi_p, color='tomato', alpha=0.8)
+    axs[1].axhline(np.mean(casi_p) if casi_p else 0,
+                   color='darkred', lw=1.5, ls='--',
+                   label=f'Povprečje: {np.mean(casi_p):.2f}s')
+    axs[1].set_title(f'Pospravljanje  (skupaj: {casi_zaticev["t_skupaj_p"]:.1f}s)')
+    axs[1].set_xlabel('Zatič #')
+    axs[1].set_ylabel('Čas [s]')
+    axs[1].set_xticks(x_p)
+    axs[1].legend(fontsize=9)
+    axs[1].grid(alpha=0.3, axis='y')
+
+    plt.tight_layout()
+    if izhod_pot:
+        plt.savefig(izhod_pot, dpi=130)
+        plt.close()
+        print(f"[Časovnik] Graf: {izhod_pot}")
+    else:
+        plt.show()
 
 # ===== TEST =====
 if __name__ == "__main__":
@@ -501,3 +770,7 @@ if __name__ == "__main__":
     print(f"\nV={len(r['cicli_vstavljanje'])}  P={len(r['cicli_pospravljanje'])}")
     a.narisi_graf(r, '/tmp/test_zone.png')
     print("Graf: /tmp/test_zone.png")
+
+    print("\n--- ČASOVNIK ---")
+    cz = izracunaj_case_zaticev(r, t_blink_on=1.0, t_blink_off=34.0, verbose=True)
+    narisi_graf_casovnik(cz, '/tmp/test_casovnik.png')
