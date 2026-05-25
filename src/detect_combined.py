@@ -41,6 +41,11 @@ from luknjice_led import (
     postprocesiraj_casovnico
 )
 from analizator_y import analiziraj_iz_rezultatov
+try:
+    from overlay import OverlayRenderer
+    OVERLAY_OK = True
+except ImportError:
+    OVERLAY_OK = False
 
 # ===== STRATEGIJA =====
 
@@ -75,48 +80,134 @@ LANDMARK_NACIN = "TIP"
 
 # ===== SLEDILEC ROKE =====
 
+# ── ROI MASKE PO KAMERI ──────────────────────────────────────────────────
+# Definira izključena območja za vsako kamero (normalizirane koordinate 0-1).
+# MediaPipe ne zaznava roke v teh območjih → prepreči detekcijo napačne roke.
+# Format: { "ime_kamere": (x_min, y_min, x_max, y_max) }
+# Vrednost None = brez omejitve za to kamero.
+#
+# Območja so določena iz vizualnega pregleda videoposnetkov:
+#   camP_0, camS_0 → desnih ~25% slike (roka zunaj plošče)
+#   camP_1, camS_1 → desnih ~25% slike
+#   camP_2, camS_2 → desnih ~28% slike
+#
+# Za kalibracijo: nastavi x_max_roi na vrednost kjer se začne nezaželena roka.
+# Koordinate so normalizirane (0.0 = levo, 1.0 = desno).
+
+ROI_KAMERE: dict = {
+    "camP_0": {"x_max": 0.75},   # izključi desnih 25%
+    "camP_1": {"x_max": 0.85},
+    "camP_2": {"x_max": 0.72},
+    "camS_0": {"x_max": 0.75},
+    "camS_1": {"x_max": 0.85},
+    "camS_2": {"x_max": 0.72},
+}
+
+# Privzeta vrednost za nedefinirane kamere (brez omejitve)
+ROI_PRIVZETO = {"x_max": 1.0}
+
+
 class SledilecRoke:
-    def __init__(self, min_zaupanje=0.6):
+    def __init__(self, min_zaupanje=0.6, ime_kamere=None):
         if not MEDIAPIPE_OK:
             raise ImportError("pip install mediapipe --break-system-packages")
         self.mp_h  = mp.solutions.hands
         self.mp_dr = mp.solutions.drawing_utils
         self.hands = self.mp_h.Hands(
-            static_image_mode=False, max_num_hands=2,
+            static_image_mode=False, max_num_hands=1,
             min_detection_confidence=min_zaupanje,
             min_tracking_confidence=0.5)
 
-    def zazaj(self, frame, nacin=None, aktivna_mreza=None):  # parameter tukaj
+        # ROI maska za to kamero
+        roi = ROI_KAMERE.get(ime_kamere or "", ROI_PRIVZETO)
+        self._roi_x_max = roi.get("x_max", 1.0)
+        self._roi_x_min = roi.get("x_min", 0.0)
+        self._roi_y_max = roi.get("y_max", 1.0)
+        self._roi_y_min = roi.get("y_min", 0.0)
+        self._ime_kamere = ime_kamere
+
+    def zazaj(self, frame, nacin=None):
         if nacin is None:
             nacin = LANDMARK_NACIN
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = self.hands.process(rgb)
         if not res.multi_hand_landmarks:
             return None, None
-
-        # Izberi pravo roko glede na aktivno mrežo
-        idx_roke = 0
-        if aktivna_mreza and res.multi_handedness:
-            zelena = "Left" if aktivna_mreza == "ZG" else "Right"
-            for i, h in enumerate(res.multi_handedness):
-                if h.classification[0].label == zelena:
-                    idx_roke = i
-                    break
-        if idx_roke >= len(res.multi_hand_landmarks):
-            idx_roke = 0
-
-        lm = res.multi_hand_landmarks[idx_roke]  # najprej določi lm
+        lm  = res.multi_hand_landmarks[0]
         h, w = frame.shape[:2]
-        if nacin == "WRIST":                      # potem izračunaj pt iz pravega lm
+        if nacin == "WRIST":
             pt = lm.landmark[self.mp_h.HandLandmark.WRIST]
         elif nacin == "MCP":
             pt = lm.landmark[self.mp_h.HandLandmark.INDEX_FINGER_MCP]
         else:
             pt = lm.landmark[self.mp_h.HandLandmark.INDEX_FINGER_TIP]
-        if res.multi_handedness:
-            for i, hand_cls in enumerate(res.multi_handedness):
-                print(f"[DBG-ROKA] i={i} label={hand_cls.classification[0].label} score={hand_cls.classification[0].score:.2f}")
         return (int(pt.x * w), int(pt.y * h)), lm
+
+    def _maskiraj_frame(self, frame):
+        """
+        Počrni izključeno območje slike (desna cona = napačna roka).
+        MediaPipe potem ne zaznava rok v tem območju.
+        Vrne maskiran frame in originalne dimenzije.
+        """
+        h, w = frame.shape[:2]
+        x_min_px = int(self._roi_x_min * w)
+        x_max_px = int(self._roi_x_max * w)
+        y_min_px = int(self._roi_y_min * h)
+        y_max_px = int(self._roi_y_max * h)
+
+        # Samo če je ROI < celotna slika — sicer ni treba maskirati
+        if x_max_px >= w and x_min_px <= 0 and y_max_px >= h and y_min_px <= 0:
+            return frame, False
+
+        masked = frame.copy()
+        # Počrni levi del pred ROI
+        if x_min_px > 0:
+            masked[:, :x_min_px] = 0
+        # Počrni desni del za ROI
+        if x_max_px < w:
+            masked[:, x_max_px:] = 0
+        # Počrni zgornji del
+        if y_min_px > 0:
+            masked[:y_min_px, :] = 0
+        # Počrni spodnji del
+        if y_max_px < h:
+            masked[y_max_px:, :] = 0
+        return masked, True
+
+    def _tocka_v_roi(self, px, py, w, h):
+        """Preveri ali je zaznana točka znotraj veljavnega ROI."""
+        rel_x = px / w
+        rel_y = py / h
+        return (self._roi_x_min <= rel_x <= self._roi_x_max and
+                self._roi_y_min <= rel_y <= self._roi_y_max)
+
+    def zazaj_multi(self, frame):
+        """
+        Zaznava vseh treh točk hkrati: kazalec (TIP), palec (THUMB), center (WRIST).
+        Pred procesiranjem počrni izključeno območje (ROI maska).
+        Vrne (dict { "TIP": (px,py), "THUMB": (px,py), "CENTER": (px,py) }, lm)
+        ali (None, None) če roka ni zaznana ali je izven ROI.
+        """
+        frame_mask, maskirano = self._maskiraj_frame(frame)
+        rgb = cv2.cvtColor(frame_mask, cv2.COLOR_BGR2RGB)
+        res = self.hands.process(rgb)
+        if not res.multi_hand_landmarks:
+            return None, None
+        lm = res.multi_hand_landmarks[0]
+        h, w = frame.shape[:2]
+        def pt(idx):
+            p = lm.landmark[idx]
+            return (int(p.x * w), int(p.y * h))
+        tocke = {
+            "TIP":    pt(8),   # INDEX_FINGER_TIP
+            "THUMB":  pt(4),   # THUMB_TIP
+            "CENTER": pt(0),   # WRIST
+        }
+        # Dvojna varnost: zavrni če je WRIST izven ROI
+        wrist = tocke["CENTER"]
+        if not self._tocka_v_roi(wrist[0], wrist[1], w, h):
+            return None, None
+        return tocke, lm
 
     def narisi(self, frame, lm):
         if lm:
@@ -400,20 +491,32 @@ class ProcesorCombined:
         self.izhod_video = izhod_video
         self.izhod_graf  = izhod_graf
         self.verbose     = verbose
-        self._aktivno_zaklenjeno = False
 
         import os as _os
         self.kamera    = doloci_kamero(_os.path.basename(pot_videa))
         self.roi_param = ROI_PARAMETRI.get(self.kamera, ROI_PARAMETRI["camP_0"])
 
         self.hom      = BoardHomografija(razmik_mm=razmik_mm)
-        self.sledilec = SledilecRoke() if MEDIAPIPE_OK else None
+        # Določi ime kamere iz poti videa za ROI kalibracijo
+        _ime_vid = pot_videa.replace("\\", "/").split("/")[-1].replace(".mp4", "")
+        _ime_kam = None
+        for _k in ["camP_0","camP_1","camP_2","camS_0","camS_1","camS_2"]:
+            if _k in _ime_vid:
+                _ime_kam = _k; break
+        self.sledilec = SledilecRoke(ime_kamere=_ime_kam) if MEDIAPIPE_OK else None
 
         self.traj2d  = None
         self.traj1d  = None
         self.fsm_hom = None
         self.fsm_1d  = None
         self.os      = None
+
+        # Logerji za multi-točkovne trajektorije (TIP, THUMB, CENTER)
+        self._log_multi = {
+            "TIP":    {"casi": [], "traj": []},
+            "THUMB":  {"casi": [], "traj": []},
+            "CENTER": {"casi": [], "traj": []},
+        }
 
         # LED stroj stanj — za zaznavo faze
         self.led_stroj       = None
@@ -426,6 +529,7 @@ class ProcesorCombined:
         self._os_ok                   = False
         self._blink_counter           = 0
         self._pospravljanje_t_start   = None   # zamuda pri preklopu faze
+        self._overlay_renderer        = None   # inicializira se v procesiraj()
 
         if verbose:
             print(f"[Combined] kamera={self.kamera}, strategija={strategija}")
@@ -514,22 +618,10 @@ class ProcesorCombined:
         # Določi aktivno področje
         zg_on = je_obmocje_prizgano(n_zg)
         sp_on = je_obmocje_prizgano(n_sp)
-        if not getattr(self, '_aktivno_zaklenjeno', False):
-            if zg_on and not sp_on:
-                self._aktivno = "zgornje"
-                self._aktivno_zaklenjeno = True  # zakleni po prvi določitvi
-                if self.verbose:
-                    print(f"[Combined] Aktivna roka zakljenjena: LEVA (ZG)")
-            elif sp_on and not zg_on:
-                self._aktivno = "spodnje"
-                self._aktivno_zaklenjeno = True
-                if self.verbose:
-                    print(f"[Combined] Aktivna roka zakljenjena: DESNA (SP)")
-        
-        if not self._aktivno_zaklenjeno:
-            print(f"[DBG] aktivno={self._aktivno} zg={n_zg} sp={n_sp}")
-        else:
-            print(f"[DBG] ZAKLENJENO aktivno={self._aktivno}")
+        if zg_on and not sp_on:
+            self._aktivno = "zgornje"
+        elif sp_on and not zg_on:
+            self._aktivno = "spodnje"
 
         # Posodobi LED stroj
         self.led_stroj.posodobi(frame_idx, n_zg, n_sp)
@@ -614,6 +706,10 @@ class ProcesorCombined:
         self.fsm_1d  = FSM1D(fps=fps, verbose=self.verbose)
         self.led_stroj = StrojStanj9HPT(fps=fps)
 
+        # Overlay renderer
+        if OVERLAY_OK:
+            self._overlay_renderer = OverlayRenderer(fps=fps)
+
         writer = None
         if self.izhod_video:
             writer = cv2.VideoWriter(
@@ -650,6 +746,40 @@ class ProcesorCombined:
             # Posodobi LED stroj vsak frame in preberi fazo
             faza_trenutna = self._posodobi_led_stroj(frame_idx, n_zg, n_sp)
 
+            # ── LIVE ŠTETJE ZATIČEV ─────────────────────────────────────
+            # Sproti sledimo padcem (vstavljanje) in vzponom (pospravljanje)
+            # signala n_luknjic — ne čakamo na postprocesiraj_casovnico.
+            if self.led_stroj and self.led_stroj.stanje == 'ACTIVE':
+                akt   = self.led_stroj.aktivno_obmocje
+                n_akt = n_zg if akt == 'zgornje' else n_sp
+                faza_led = self.led_stroj.faza
+
+                if not hasattr(self, '_lv_init'):
+                    self._lv_init        = True
+                    self._lv_n_vst       = 0
+                    self._lv_n_posp      = 0
+                    self._lv_n_max_vst   = float(n_akt)  # max pri začetku vst.
+                    self._lv_n_min_posp  = float(n_akt)  # min pri začetku posp.
+                    self._lv_faza_zadnja = faza_led
+
+                # Faza se je spremenila VST→CAKANJE→POSP
+                if faza_led != self._lv_faza_zadnja:
+                    if faza_led == 'POSPRAVLJANJE':
+                        self._lv_n_min_posp = float(n_akt)
+                    self._lv_faza_zadnja = faza_led
+
+                if faza_led == 'VSTAVLJANJE':
+                    if n_akt > self._lv_n_max_vst:
+                        self._lv_n_max_vst = float(n_akt)
+                    vst = int(round(self._lv_n_max_vst - n_akt))
+                    self._lv_n_vst = max(0, min(vst, 9))
+
+                elif faza_led == 'POSPRAVLJANJE':
+                    if n_akt < self._lv_n_min_posp:
+                        self._lv_n_min_posp = float(n_akt)
+                    posp = int(round(n_akt - self._lv_n_min_posp))
+                    self._lv_n_posp = max(0, min(posp, 9))
+
             # Posreduj fazo FSM-u
             # Po posodobitvi LED stroja, vedno preveri fazo
             # (ne samo ko je roka zaznana)
@@ -662,11 +792,14 @@ class ProcesorCombined:
                     self.fsm_hom.stanje = FSMStanje.IDLE
                     self.fsm_hom._cnt = 0
 
-            # Sledenje roke — samo po blinku (ko je aktivna_mreza znana)
+            # Sledenje roke — zaznava vseh treh točk
             hand_img, lm = None, None
-            if self._aktivno is not None and self.sledilec:
-                aktivna_mreza = 'ZG' if self._aktivno == 'zgornje' else 'SP'
-                hand_img, lm = self.sledilec.zazaj(frame, aktivna_mreza=aktivna_mreza)
+            tocke_px_multi = None
+            if self.sledilec:
+                tocke_px_multi, lm = self.sledilec.zazaj_multi(frame)
+                # Osnovna točka za FSM in obstoječo logiko ostane TIP (kazalec)
+                if tocke_px_multi:
+                    hand_img = tocke_px_multi["TIP"]
 
             roka_mm = None
             s_val   = None
@@ -674,19 +807,53 @@ class ProcesorCombined:
             if hand_img:
                 if self._hom_ok:
                     roka_mm = self.hom.v_mm(hand_img)
+                    # Za trajektorijo in kinematiko: WRIST (stabilnejši center roke)
+                    # TIP ostane za FSM detekcijo vstavljanja
                     if roka_mm:
                         self.traj2d.dodaj(roka_mm[0], roka_mm[1], t_s)
                         vel = self.traj2d.hitrost_mm_s()
-                        log_casi.append(t_s)
-                        log_xs.append(roka_mm[0])
-                        log_ys.append(roka_mm[1])
-                        log_vel.append(vel)
-                        if self.hom.center_posodice_mm:
-                            d_pos_val = np.linalg.norm(
-                                np.array(roka_mm) - np.array(self.hom.center_posodice_mm))
-                            log_dpos.append(d_pos_val)
-                        else:
-                            log_dpos.append(np.nan)
+
+                        # Trajektorijo logiramo SAMO med aktivnim testom.
+                        # Primarno: led_stroj.stanje == 'ACTIVE'
+                        # Rezervno: cas_zacetka/cas_konca sta znana (po DONE)
+                        #   → logiramo samo frame-e v tem časovnem oknu
+                        test_aktiven = False
+                        if self.led_stroj:
+                            st = self.led_stroj.stanje
+                            t_zac = (self.led_stroj.cas_zacetka / fps
+                                     if self.led_stroj.cas_zacetka else None)
+                            t_kon = (self.led_stroj.cas_konca / fps
+                                     if self.led_stroj.cas_konca else None)
+                            if st == 'ACTIVE' and t_zac is not None:
+                                # Logiramo od blinka naprej
+                                # (cas_konca ni znan dokler DONE ne pride)
+                                test_aktiven = (t_s >= t_zac)
+                            elif st == 'DONE' and t_zac is not None:
+                                t_kon_eff = t_kon if t_kon else t_s
+                                test_aktiven = (t_zac <= t_s <= t_kon_eff)
+
+                        if test_aktiven:
+                            log_casi.append(t_s)
+                            # traj_mm = TIP (konica kazalca) — analizator_y
+                            # in FSM pricakujeta TIP signal
+                            log_xs.append(roka_mm[0])
+                            log_ys.append(roka_mm[1])
+                            log_vel.append(vel)
+                            if self.hom.center_posodice_mm:
+                                d_pos_val = np.linalg.norm(
+                                    np.array(roka_mm) - np.array(self.hom.center_posodice_mm))
+                                log_dpos.append(d_pos_val)
+                            else:
+                                log_dpos.append(np.nan)
+
+                            # Logiranje vseh treh točk v mm
+                            if tocke_px_multi:
+                                for ime_t, px_t in tocke_px_multi.items():
+                                    mm_t = self.hom.v_mm(px_t)
+                                    if mm_t:
+                                        self._log_multi[ime_t]["casi"].append(t_s)
+                                        self._log_multi[ime_t]["traj"].append(mm_t)
+
                 if self._os_ok and self.os:
                     s_val = self.os.projekcija(hand_img)
                     self.traj1d.dodaj(s_val, t_s)
@@ -711,8 +878,32 @@ class ProcesorCombined:
             #           f"d_pos={d_pos} H={hst} V={n_v} P={n_p}")
 
             if writer is not None:
-                frame = self._narisi_overlay(
-                    frame, hand_img, roka_mm, s_val, lm, t_s, faza_trenutna)
+                if self._overlay_renderer:
+                    ctx = {
+                        "roka_px":    hand_img,
+                        "roka_mm":    roka_mm,
+                        "lm":         lm,
+                        "t_s":        t_s,
+                        "faza":       faza_trenutna,
+                        # Live štetje iz LED signala (posodoblja se vsak frame)
+                        "n_vst_led":  getattr(self, '_lv_n_vst',  0),
+                        "n_posp_led": getattr(self, '_lv_n_posp', 0),
+                        # Čas začetka testa (od blinka) za HUD uro
+                        "t_blink": (self.led_stroj.cas_zacetka / fps
+                                    if self.led_stroj and self.led_stroj.cas_zacetka
+                                    else None),
+                        # Čas konca testa (zamrzne uro)
+                        "t_konec": (self.led_stroj.cas_konca / fps
+                                    if self.led_stroj and self.led_stroj.cas_konca
+                                    else None),
+                        "hom":        self.hom,
+                        "hom_ok":     self._hom_ok,
+                        "roi_x_max":  self.sledilec._roi_x_max if self.sledilec else 1.0,
+                    }
+                    frame = self._overlay_renderer.narisi(frame, ctx)
+                else:
+                    frame = self._narisi_overlay(
+                        frame, hand_img, roka_mm, s_val, lm, t_s, faza_trenutna)
                 writer.write(frame)
 
             frame_idx += 1
@@ -745,6 +936,8 @@ class ProcesorCombined:
                                casi_1d, s_raw, s_gl, vel1d,
                                cicli_v, cicli_p)
 
+        # Kinematični grafi se kličejo iz pipeline.py (po koncu procesiraj)
+
         return {
             "cicli":                cicli_vse,
             "cicli_vstavljanje":    cicli_v,
@@ -765,6 +958,7 @@ class ProcesorCombined:
             "vel_mm_s":             vel_arr,
             "cicli_vstavljanje_y":   [],
             "cicli_pospravljanje_y": [],
+            "log_multi":             self._log_multi,
         }
 
     # ── IZPIS ───────────────────────────────────────────────────────────
