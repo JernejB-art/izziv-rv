@@ -24,14 +24,14 @@ except ImportError:
 
 # Minimalni premik ki se šteje kot gibanje [mm]
 # MediaPipe šum na mirni roki je tipično ±1-3 mm v homografiranem prostoru
-DEAD_ZONE_MM     = 2.5
+DEAD_ZONE_MM     = 1.0
 
 # Maksimalna fizično možna hitrost roke pri 9HPT [mm/s]
 # Najhitrejši pacienti dosežejo ~400 mm/s; nad tem je zagotovo šum
-V_MAX_FIZICNO    = 500.0
+V_MAX_FIZICNO    = 700.0
 
 # Minimalno število zaporednih frameov nad dead-zone za šteti kot gibanje
-GIBANJE_MIN_N    = 3
+GIBANJE_MIN_N    = 1
 
 # ──────────────────────────────────────────────────────────────────────────
 # BARVE (BGR)
@@ -346,11 +346,14 @@ class OverlayRenderer:
         d, v, a = self.get_kin()
 
         # ── 0. ROI MEJA ──────────────────────────────────────────────────
-        roi_x_max = ctx.get("roi_x_max", 1.0)
-        if roi_x_max < 1.0:
-            x_meja = int(roi_x_max * w)
-            cv2.line(out, (x_meja, 0), (x_meja, h), (0, 0, 200), 2, cv2.LINE_AA)
-            besedilo_senca(out, "ROI", (x_meja - 36, 18), 0.38, (0, 0, 200))
+        roi_x_max     = ctx.get("roi_x_max",     1.0)
+        roi_x_max_bot = ctx.get("roi_x_max_bot", roi_x_max)  # spodnji rob
+        if roi_x_max < 1.0 or roi_x_max_bot < 1.0:
+            x_top = int(roi_x_max     * w)
+            x_bot = int(roi_x_max_bot * w)
+            cv2.line(out, (x_top, 0), (x_bot, h), (0, 0, 200), 2, cv2.LINE_AA)
+            besedilo_senca(out, "ROI", (min(x_top, x_bot) - 36, 18),
+                           0.38, (0, 0, 200))
 
         # ── 1. HOМ OVERLAY ───────────────────────────────────────────────
         if hom_ok and hom and hom.veljavna:

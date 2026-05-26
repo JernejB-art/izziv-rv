@@ -95,12 +95,15 @@ LANDMARK_NACIN = "TIP"
 # Koordinate so normalizirane (0.0 = levo, 1.0 = desno).
 
 ROI_KAMERE: dict = {
-    "camP_0": {"x_max": 0.75},   # izključi desnih 25%
-    "camP_1": {"x_max": 0.85},
-    "camP_2": {"x_max": 0.72},
-    "camS_0": {"x_max": 0.75},
-    "camS_1": {"x_max": 0.85},
-    "camS_2": {"x_max": 0.72},
+    # x_max     = meja na ZGORNJEM robu slike (normalizirano 0.0-1.0)
+    # x_max_bot = meja na SPODNJEM robu slike (privzeto = x_max → navpična črta)
+    # Primer poševne črte: x_max=0.75, x_max_bot=0.85 → nagib desno
+    "camP_0": {"x_max": 0.95, "x_max_bot": 0.75},
+    "camP_1": {"x_max": 0.85, "x_max_bot": 0.85},
+    "camP_2": {"x_max": 0.60, "x_max_bot": 0.85},
+    "camS_0": {"x_max": 0.92, "x_max_bot": 0.67},
+    "camS_1": {"x_max": 0.75, "x_max_bot": 0.75},
+    "camS_2": {"x_max": 0.72, "x_max_bot": 0.72},
 }
 
 # Privzeta vrednost za nedefinirane kamere (brez omejitve)
@@ -120,11 +123,12 @@ class SledilecRoke:
 
         # ROI maska za to kamero
         roi = ROI_KAMERE.get(ime_kamere or "", ROI_PRIVZETO)
-        self._roi_x_max = roi.get("x_max", 1.0)
-        self._roi_x_min = roi.get("x_min", 0.0)
-        self._roi_y_max = roi.get("y_max", 1.0)
-        self._roi_y_min = roi.get("y_min", 0.0)
-        self._ime_kamere = ime_kamere
+        self._roi_x_max     = roi.get("x_max", 1.0)
+        self._roi_x_max_bot = roi.get("x_max_bot", self._roi_x_max)
+        self._roi_x_min     = roi.get("x_min", 0.0)
+        self._roi_y_max     = roi.get("y_max", 1.0)
+        self._roi_y_min     = roi.get("y_min", 0.0)
+        self._ime_kamere    = ime_kamere
 
     def zazaj(self, frame, nacin=None):
         if nacin is None:
@@ -150,35 +154,46 @@ class SledilecRoke:
         Vrne maskiran frame in originalne dimenzije.
         """
         h, w = frame.shape[:2]
-        x_min_px = int(self._roi_x_min * w)
-        x_max_px = int(self._roi_x_max * w)
-        y_min_px = int(self._roi_y_min * h)
-        y_max_px = int(self._roi_y_max * h)
+        x_min_px    = int(self._roi_x_min * w)
+        x_max_top   = int(self._roi_x_max     * w)
+        x_max_bot   = int(self._roi_x_max_bot * w)
+        y_min_px    = int(self._roi_y_min * h)
+        y_max_px    = int(self._roi_y_max * h)
 
-        # Samo če je ROI < celotna slika — sicer ni treba maskirati
-        if x_max_px >= w and x_min_px <= 0 and y_max_px >= h and y_min_px <= 0:
+        # Samo če je ROI < celotna slika
+        if (x_max_top >= w and x_max_bot >= w and
+                x_min_px <= 0 and y_max_px >= h and y_min_px <= 0):
             return frame, False
 
         masked = frame.copy()
-        # Počrni levi del pred ROI
+
+        # Poševna meja — za vsako vrstico izračunaj x_max
+        if x_max_top != x_max_bot:
+            for y_px in range(h):
+                t = y_px / max(h - 1, 1)
+                x_meja_y = int(x_max_top + (x_max_bot - x_max_top) * t)
+                if x_meja_y < w:
+                    masked[y_px, x_meja_y:] = 0
+        else:
+            # Navpična meja (hitrejše)
+            if x_max_top < w:
+                masked[:, x_max_top:] = 0
+
         if x_min_px > 0:
             masked[:, :x_min_px] = 0
-        # Počrni desni del za ROI
-        if x_max_px < w:
-            masked[:, x_max_px:] = 0
-        # Počrni zgornji del
         if y_min_px > 0:
             masked[:y_min_px, :] = 0
-        # Počrni spodnji del
         if y_max_px < h:
             masked[y_max_px:, :] = 0
         return masked, True
 
     def _tocka_v_roi(self, px, py, w, h):
-        """Preveri ali je zaznana točka znotraj veljavnega ROI."""
-        rel_x = px / w
+        """Preveri ali je zaznana točka znotraj veljavnega ROI (upošteva poševno mejo)."""
         rel_y = py / h
-        return (self._roi_x_min <= rel_x <= self._roi_x_max and
+        # Interpoliraj x_max za to Y pozicijo
+        x_max_y = self._roi_x_max + (self._roi_x_max_bot - self._roi_x_max) * rel_y
+        rel_x = px / w
+        return (self._roi_x_min <= rel_x <= x_max_y and
                 self._roi_y_min <= rel_y <= self._roi_y_max)
 
     def zazaj_multi(self, frame):
@@ -898,7 +913,8 @@ class ProcesorCombined:
                                     else None),
                         "hom":        self.hom,
                         "hom_ok":     self._hom_ok,
-                        "roi_x_max":  self.sledilec._roi_x_max if self.sledilec else 1.0,
+                        "roi_x_max":     self.sledilec._roi_x_max     if self.sledilec else 1.0,
+                        "roi_x_max_bot": self.sledilec._roi_x_max_bot if self.sledilec else 1.0,
                     }
                     frame = self._overlay_renderer.narisi(frame, ctx)
                 else:

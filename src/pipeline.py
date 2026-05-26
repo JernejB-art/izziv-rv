@@ -129,12 +129,12 @@ def prikazi_seznam_videov(preverjen):
 
 # ===== ZANESLJIVOST ANALIZE =====
 
-PRAG_MIN_ZATICEV = 5
+PRAG_MIN_ZATICEV = 7   # < 7 → napaka zaznave, priporoči drug kot kamere
 
 def preveri_zanesljivost(n_vstavljanj, n_pospravljanj, ime_videa=""):
     """
     Vrne (zanesljivo: bool, sporocilo: str).
-    Pogoj: vsaj 5 zatičev v vsaki aktivni fazi.
+    Pogoj: vsaj 7 zatičev v vsaki aktivni fazi (< 7 → priporoči drug kot kamere).
     """
     napake = []
 
@@ -150,8 +150,8 @@ def preveri_zanesljivost(n_vstavljanj, n_pospravljanj, ime_videa=""):
         )
 
     if napake:
-        msg = "Kakovost izvedbe testa ni zadovoljiva za analizo. " \
-              "Preveri videoposnetek.\n  " + "\n  ".join(napake)
+        msg = ("Napaka v zaznavi, poskusi z drugim pogledom kamere.\n  "
+               + "\n  ".join(napake))
         return False, msg
 
     return True, "OK"

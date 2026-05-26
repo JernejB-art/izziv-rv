@@ -171,56 +171,33 @@ def izracunaj_dva(casi, traj_mm, fps=25.0, t_konec=None):
 
     dt = 1.0 / fps
 
-    # ── GLADKI SIGNALI za grafe (OneEuro filter) ─────────────────────────
-    # OneEuro: agresivno gladi ko roka miruje, odziven pri gibanju
-    # Bistveno boljši od LP za MediaPipe šum (Casiez et al. 2012)
-    x_gl, y_gl = OneEuroFilter.filtriraj_2d(
-        traj[:, 0], traj[:, 1], fps,
-        min_cutoff=1.0,   # agresivnost pri mirni roki
-        beta=0.007        # odzivnost pri gibanju
-    )
+    # ── GLADKI SIGNALI za grafe (Butterworth LP 3Hz) ─────────────────────
+    # 3Hz ohrani biomedicinski signal (0.3-1Hz), eliminira visokofrekvenčni šum
+    x_gl = glajenje_butter(traj[:, 0], fps, cutoff_hz=5.0)
+    y_gl = glajenje_butter(traj[:, 1], fps, cutoff_hz=5.0)
 
     dx = np.diff(x_gl); dy = np.diff(y_gl)
     razdalje_gl = np.sqrt(dx**2 + dy**2)
 
     v_raw = np.concatenate([[0.0], razdalje_gl / dt])
-    v = glajenje_butter(v_raw, fps, cutoff_hz=2.0)
+    v = glajenje_butter(v_raw, fps, cutoff_hz=3.0)
     v = np.clip(v, 0.0, None)
 
     dv = np.diff(v)
     a_raw = np.concatenate([[0.0], dv / dt])
-    a = glajenje_butter(a_raw, fps, cutoff_hz=1.5)
+    a = glajenje_butter(a_raw, fps, cutoff_hz=2.0)
 
-    # ── KUMULATIVNA POT — dead-zone logika (konzistentna z overlay) ──────
-    # Seštevamo SUROVE (neglajene) premike z enakimi pogoji kot overlay.py
-    DEAD_ZONE_MM  = 2.5
-    V_MAX_MM_S    = 500.0
-    GIBANJE_MIN_N = 3
-
-    d_kum = 0.0; gibanje_n = 0; prejsnja = traj[0]
-    d_arr = [0.0]
-    for i in range(1, len(traj)):
-        dx_i = traj[i, 0] - prejsnja[0]
-        dy_i = traj[i, 1] - prejsnja[1]
-        razd = float(np.sqrt(dx_i**2 + dy_i**2))
-        if razd < DEAD_ZONE_MM:
-            gibanje_n = 0; prejsnja = traj[i]; d_arr.append(d_kum); continue
-        gibanje_n += 1
-        if gibanje_n < GIBANJE_MIN_N or razd / dt > V_MAX_MM_S:
-            prejsnja = traj[i]; d_arr.append(d_kum); continue
-        d_kum += razd
-        prejsnja = traj[i]
-        d_arr.append(d_kum)
-    d = np.array(d_arr)
+    # ── KUMULATIVNA POT — iz zglajenh koordinat (OneEuro) ───────────────
+    # Sešteje vse premike brez dead-zone → vrednosti 4-7m za cel test
+    d = np.concatenate([[0.0], np.cumsum(np.sqrt(np.diff(x_gl)**2 + np.diff(y_gl)**2))])
 
     # Zagotovi enako dolžino
     n = len(casi)
     d    = d[:n];    v    = v[:n];    a    = a[:n]
     x_gl = x_gl[:n]; y_gl = y_gl[:n]
 
-    # Statistike na gladkem signalu — 95p na aktivnih segmentih (v > 20mm/s)
-    v_aktiv = v[v > 20.0]
-    v_95  = float(np.percentile(v_aktiv, 95)) if len(v_aktiv) > 5 else float(np.max(v))
+    # Statistike
+    v_95  = float(np.percentile(v, 95))
     a_95  = float(np.percentile(np.abs(a), 95))
     v_max = float(np.max(v))
     a_max = float(np.max(np.abs(a)))
