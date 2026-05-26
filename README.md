@@ -207,3 +207,5 @@ scikit-learn
 - Sistem zanesljivo dela pri kotih kamere, kjer je Y-razlika med posodico in luknjicami dovolj velika (> ~80 mm v normaliziranem prostoru). Neugodni koti (frontalni pogled na roko) lahko povzročijo izpad zaznave.
 - Časi testov so sistematično nekoliko previsoki (~+15 % v povprečju) — posledica zamude pri zaznavi konca LED signala.
 - Zaznava pospravljanja je zanesljivejša pri počasnejšem gibanju; pri hitrejših pacientih je točnost nižja.
+
+<img width="1915" height="1026" alt="image" src="https://github.com/user-attachments/assets/fb482f08-ad8b-40ea-ac9a-8a7254cae40c" />
