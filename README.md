@@ -59,6 +59,21 @@ Podatki (samo branje, ne spreminjaš):
 
 ### 1. Vstopi v Docker kontejner
 
+Na strežniškem računalniku je moje delovno okolje znotraj: 
+
+```bash 
+/media/FastDataMama/jernejb
+```
+
+Odpremo ustreno delovno mapo:
+
+```bash 
+cd izziv_rv
+cd src
+```
+
+Poženemo docker:
+
 ```bash
 docker run --shm-size=16g -it \
   -v /media/FastDataMama/jernejb/izziv_rv:/workspace \
