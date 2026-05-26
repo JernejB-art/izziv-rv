@@ -256,6 +256,31 @@ def analiziraj_video(pot_videa, izhod_mapa, fps_override=None, verbose=False):
         with contextlib.redirect_stdout(devnull):
             r_y = analiziraj_iz_rezultatov(r, verbose=False)
 
+        # Časovnik zatičev iz analizator_y_zone (pravilna definicija)
+        # casi_zaticev = od blink → prehod meje[0] → prehod meje[1] → ...
+        # To se bolj ujema z referenčnimi CSV časi kot movement_time
+        try:
+            from analizator_y import izracunaj_case_zaticev
+            if r_y:
+                led_obj  = r.get("led_stroj")
+                # cas_zacetka/cas_konca sta v frameih — delimo s fps led_stroja
+                _fps_led = getattr(led_obj, "fps", fps_override or 25.0)
+                t_blink_on  = (led_obj.cas_zacetka / _fps_led
+                               if led_obj and led_obj.cas_zacetka else None)
+                t_blink_off = (led_obj.cas_konca / _fps_led
+                               if led_obj and led_obj.cas_konca else None)
+                casi_zaticev = izracunaj_case_zaticev(
+                    r_y,
+                    t_blink_on=t_blink_on,
+                    t_blink_off=t_blink_off,
+                    verbose=False)
+            else:
+                casi_zaticev = None
+        except Exception as _e_cz:
+            import traceback as _tb_cz
+            print(f"  [DBG] casi_zaticev napaka: {_e_cz}")
+            casi_zaticev = None
+
         # Kinematični grafi — po redirect bloku da vidimo morebitne napake
         if izhod_graf and r.get("hom_ok"):
             try:
@@ -346,16 +371,23 @@ def analiziraj_video(pot_videa, izhod_mapa, fps_override=None, verbose=False):
     }
 
     # Časi posameznih zatičev
-    casi_vst = []
-    casi_posp = []
-    for c in cicli_v:
-        mt = c.get("movement_time")
-        if mt:
-            casi_vst.append(round(mt, 3))
-    for c in cicli_p:
-        mt = c.get("movement_time")
-        if mt:
-            casi_posp.append(round(mt, 3))
+    # Primarna metoda: casi_zaticev iz izracunaj_case_zaticev
+    # (od blink/prehoda_meje do naslednjega prehoda_meje)
+    # Rezervna: movement_time iz Y-analizatorja
+    if casi_zaticev and casi_zaticev.get("casi_v"):
+        casi_vst  = [round(t, 3) for t in casi_zaticev["casi_v"]]
+        casi_posp = [round(t, 3) for t in casi_zaticev["casi_p"]]
+    else:
+        casi_vst = []
+        casi_posp = []
+        for c in cicli_v:
+            mt = c.get("movement_time")
+            if mt:
+                casi_vst.append(round(mt, 3))
+        for c in cicli_p:
+            mt = c.get("movement_time")
+            if mt:
+                casi_posp.append(round(mt, 3))
 
     return {
         "video":             ime,
@@ -364,9 +396,16 @@ def analiziraj_video(pot_videa, izhod_mapa, fps_override=None, verbose=False):
         "px_per_mm":         r.get("px_per_mm"),
         "n_vstavljanj":      len(cicli_v),
         "n_pospravljanj":    len(cicli_p),
-        "casi_vstavljanj":   casi_vst,
-        "casi_pospravljanj": casi_posp,
-        "mt_skupaj":         sum(casi_vst) + sum(casi_posp),
+        "casi_vstavljanj":    casi_vst,
+        "casi_pospravljanj":  casi_posp,
+        "casi_zaticev":       casi_zaticev,
+        "t_reakcija":         casi_zaticev.get("t_reakcija") if casi_zaticev else None,
+        "t_skupaj_v":         casi_zaticev.get("t_skupaj_v") if casi_zaticev else None,
+        "t_skupaj_p":         casi_zaticev.get("t_skupaj_p") if casi_zaticev else None,
+        # Alias za evalvacija.py kompatibilnost
+        "mt_vstavljanje_y":   casi_vst,
+        "mt_pospravljanje_y": casi_posp,
+        "mt_skupaj":          sum(casi_vst) + sum(casi_posp),
         "led":               led_casi,
         "kin":               {
             "pot_skupaj":  kin.get("pot_skupaj")  if kin else None,
@@ -495,12 +534,20 @@ def izpisi_rezultate(r_video, csv_podatki=None):
     # Časi posameznih zatičev
     casi_v = r_video.get("casi_vstavljanj", [])
     casi_p = r_video.get("casi_pospravljanj", [])
+    t_reakcija = r_video.get("t_reakcija")
+    if t_reakcija is not None:
+        print(f"  Reakcijski čas:         {t_reakcija:.3f} s  (blink → 1. pobiranje)")
     if casi_v:
         casi_str = "  ".join(f"{t:.2f}" for t in casi_v)
         print(f"  Časi vstavljanj [s]:    {casi_str}")
     if casi_p:
         casi_str = "  ".join(f"{t:.2f}" for t in casi_p)
         print(f"  Časi pospravljanj [s]:  {casi_str}")
+    t_v = r_video.get("t_skupaj_v")
+    t_p = r_video.get("t_skupaj_p")
+    if t_v and t_p:
+        print(f"  Skupaj vstavljanje:     {t_v:.2f} s")
+        print(f"  Skupaj pospravljanje:   {t_p:.2f} s")
 
     # Kinematika
     if kin.get("pot_skupaj") is not None:
@@ -797,6 +844,22 @@ def analiziraj_pacienta_interaktivno(
     print(f"  JSON:  {json_pot}")
     print("  " + "─" * 58)
     print()
+
+    # Avtomatska evalvacija — samo če CSV referenčni podatki obstajajo
+    if csv_podatki is not None:
+        try:
+            from evalvacija import evalviraj_pacienta
+            print(f"  {bold('EVALVACIJA')}  (primerjava z referenčnimi CSV)")
+            evalviraj_pacienta(
+                rezultati_json_pot = json_pot,
+                csv_podatki        = csv_podatki,
+                izhod_mapa         = izhod_pac,
+                verbose            = True,
+            )
+        except ImportError:
+            pass   # evalvacija.py ni v src/ — preskoči tiho
+        except Exception as _e_eval:
+            print(f"  {warn(f'Evalvacija ni uspela: {_e_eval}')}")
 
     return rezultat
 
