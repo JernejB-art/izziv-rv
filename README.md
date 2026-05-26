@@ -65,7 +65,7 @@ Na strežniškem računalniku je moje delovno okolje znotraj:
 /media/FastDataMama/jernejb
 ```
 
-Odpremo ustreno delovno mapo:
+Odpremo ustrezno delovno mapo:
 
 ```bash 
 cd izziv_rv
