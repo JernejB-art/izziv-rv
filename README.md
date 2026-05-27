@@ -72,7 +72,11 @@ cd izziv_rv
 cd src
 ```
 
-Poženemo docker:
+Zgradimo in poženemo docker:
+
+```bash
+docker build -t jernejb_rv /media/FastDataMama/jernejb/izziv_rv/
+```
 
 ```bash
 docker run --shm-size=16g -it \
